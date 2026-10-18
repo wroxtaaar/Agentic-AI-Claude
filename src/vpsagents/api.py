@@ -44,6 +44,9 @@ def create_app(engine: Engine, token: str | None = None) -> Starlette:
                               "deployable": bool(p.deploy_command), "verify": bool(p.verify_commands)}
                              for p in engine.settings.projects])
 
+    async def budget(_):
+        return JSONResponse(engine.budget_status())
+
     async def submit(request: Request):
         try:
             body = await request.json()
@@ -89,6 +92,7 @@ def create_app(engine: Engine, token: str | None = None) -> Starlette:
     routes = [
         Route("/health", health),
         Route("/projects", guarded(projects)),
+        Route("/budget", guarded(budget)),
         Route("/jobs", guarded(submit), methods=["POST"]),
         Route("/jobs", guarded(jobs), methods=["GET"]),
         Route("/jobs/{jid}", guarded(job)),

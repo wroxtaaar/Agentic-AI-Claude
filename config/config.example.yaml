@@ -19,6 +19,9 @@ worker:
   #   command: ["your-agent", "--non-interactive", "--prompt-file", "{prompt_file}"]
   command: null
 
+# Free-quota protection (see docs/FREE-TOKENS.md). One agent run = one worker session (edit, repair or review).
+max_agent_runs_per_job: 8               # a runaway repair loop stops here
+max_agent_runs_per_day: 150             # UTC day across all jobs; null = unlimited. Set a bit under your real daily budget
 max_repairs: 2                          # verify-fail -> feed output back to the worker, up to N times
 review_pass: true                       # second model pass must end with "VERDICT: APPROVE" for tier-3 auto-apply
 approval_ttl_minutes: 720

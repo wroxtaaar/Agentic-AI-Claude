@@ -13,7 +13,7 @@ you ──HTTP──> API ──> job queue ──> engine ──> sandbox conta
 
 ## Status (read this first)
 
-Built and tested here (60+ tests, real git repos, stubbed model): policy matrix, job state machine, approvals bound to
+Built and tested here (70 tests, real git repos, stubbed model): policy matrix, job state machine, approvals bound to
 commit SHA, worktree/merge/rollback safety, diff vetting (secrets, symlinks), repair loop, review verdict gate,
 incident monitor, HTTP API + auth, redaction, role/persona loading, gateway probe.
 
@@ -24,6 +24,8 @@ incident monitor, HTTP API + auth, redaction, role/persona loading, gateway prob
 
 Run `vpsagents check --config config.yaml` to see what's missing on your machine.
 
+Running on free tokens? See [docs/FREE-TOKENS.md](docs/FREE-TOKENS.md): which provider accounts to add to FreeLLMAPI, privacy trade-offs, and the quota budget guard.
+
 ## Autonomy tiers (per project)
 
 | tier | meaning | start change | apply to checkout | deploy / restart |
@@ -31,7 +33,7 @@ Run `vpsagents check --config config.yaml` to see what's missing on your machine
 | 0 | observe | denied | denied | denied |
 | 1 | propose | **approval** | approval | approval |
 | 2 | assisted | auto | approval | approval |
-| 3 | trusted | auto | **auto if** verified + review `APPROVE` | **auto if** health check configured; failed deploy auto-rolls back |
+| 3 | trusted | auto | **auto if** verified + review `APPROVE` (no review pass = asks) | **auto if** health check configured; failed deploy auto-rolls back |
 
 Read-only jobs (investigate, incident, security_review) run at every tier. At tier 3 an auto action silently
 **downgrades to approval** when its safety net is missing (no verify commands, reviewer didn't say `VERDICT: APPROVE`,
@@ -69,6 +71,8 @@ docker build -f docker/Dockerfile.agent -t vpsa-agent:latest .
 vpsagents check --config config.yaml
 vpsagents serve --config config.yaml                # API on 127.0.0.1:8787 + runner + monitor
 ```
+
+Budget guard (free-quota protection): `max_agent_runs_per_job` (default 8) and `max_agent_runs_per_day` (default unlimited); `GET /budget` shows usage.
 
 Optional: `VPSA_TELEGRAM_TOKEN` + `VPSA_TELEGRAM_CHAT_ID` (or `VPSA_WEBHOOK_URL`) for approval/incident notifications.
 
@@ -109,6 +113,7 @@ experience, no claims of unrun checks, no secrets). Roles: `engineer`, `tester`,
 - Failed jobs keep their worktree for inspection; there is no garbage collector yet.
 - Auto-restart on incident for tier-3 projects is not implemented (the monitor only triages).
 - `push` to a remote is intentionally not implemented; merges stay local until you push.
+- The budget guard counts agent runs (worker sessions), not individual model requests inside a run; bound those with your agent's max-steps flag and `sandbox.timeout_seconds`.
 - One running job per project; jobs for different projects run in parallel (`max_concurrent_jobs`).
 
 ## Tests

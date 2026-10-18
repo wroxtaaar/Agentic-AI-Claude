@@ -223,6 +223,16 @@ class Store:
         with self._conn() as c:
             return c.execute("SELECT 1 FROM approvals WHERE job_id=? AND action=? AND status='rejected'", (jid, action)).fetchone() is not None
 
+    # ---- counters ---------------------------------------------------------
+    def counter_get(self, key: str) -> int:
+        return int(self.kv_get(key) or 0)
+
+    def counter_incr(self, key: str, by: int = 1) -> int:
+        with self._conn() as c:
+            c.execute("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=CAST(kv.v AS INTEGER)+?",
+                      (key, str(by), by))
+            return int(c.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()["v"])
+
     # ---- kv ---------------------------------------------------------------
     def kv_get(self, k: str) -> str | None:
         with self._conn() as c:

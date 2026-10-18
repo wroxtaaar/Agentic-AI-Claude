@@ -101,6 +101,9 @@ class Settings(BaseModel):
     roles_file: Path | None = None  # defaults to the packaged roles.yaml
     personas_dir: Path | None = None
     max_repairs: int = Field(default=2, ge=0, le=5)
+    # Free-quota protection. One "agent run" = one worker session (work, repair attempt or review pass).
+    max_agent_runs_per_job: int = Field(default=8, ge=1, le=100)
+    max_agent_runs_per_day: int | None = Field(default=None, ge=1)  # None = unlimited; UTC day
     review_pass: bool = True
     approval_ttl_minutes: int = Field(default=720, ge=1)
     max_concurrent_jobs: int = Field(default=2, ge=1, le=8)

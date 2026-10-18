@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import executors, gitops, policy
@@ -34,6 +35,10 @@ class SubmitError(ValueError):
 
 
 class PolicyDenied(SubmitError):
+    pass
+
+
+class BudgetExceeded(Exception):
     pass
 
 
@@ -142,6 +147,31 @@ class Engine:
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- budget
+    @staticmethod
+    def _day_key() -> str:
+        return "agent_runs:" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def budget_status(self) -> dict:
+        st = self.settings
+        used = self.store.counter_get(self._day_key())
+        return {"agent_runs_today": used, "max_agent_runs_per_day": st.max_agent_runs_per_day,
+                "max_agent_runs_per_job": st.max_agent_runs_per_job,
+                "remaining_today": None if st.max_agent_runs_per_day is None else max(0, st.max_agent_runs_per_day - used)}
+
+    def _run_worker(self, job: dict, task: WorkerTask):
+        """Every worker session goes through here so free-tier quota can't be burned by a loop."""
+        jid = job["id"]
+        n = self.store.get_job(jid)["data"].get("agent_runs", 0)
+        if n >= self.settings.max_agent_runs_per_job:
+            raise BudgetExceeded(f"agent-run budget for this job exhausted ({n}/{self.settings.max_agent_runs_per_job})")
+        limit = self.settings.max_agent_runs_per_day
+        if limit is not None and self.store.counter_get(self._day_key()) >= limit:
+            raise BudgetExceeded(f"daily agent-run budget reached ({limit}); resubmit tomorrow or raise max_agent_runs_per_day")
+        self.store.counter_incr(self._day_key())
+        self.store.update_data(jid, agent_runs=n + 1)
+        return self.worker.run(task)
+
     # ---- helpers
     def _fail(self, jid: str, msg: str):
         msg = redact(msg, 1500)
@@ -223,7 +253,10 @@ class Engine:
         if role.kind == "readonly":
             wt = self._worktree(job, proj, branch=False)
             prompt = build_prompt(role, task=job["task"], project_name=proj.name)
-            res = self.worker.run(WorkerTask(jid, prompt, wt.path, readonly=True, label="ro"))
+            try:
+                res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="ro"))
+            except BudgetExceeded as e:
+                self._fail(jid, str(e))
             report = redact(res.output, 20000)
             if not res.ok:
                 self.store.update_data(jid, report=report)
@@ -232,7 +265,10 @@ class Engine:
         wt = self._worktree(job, proj, branch=True)
         prompt = build_prompt(role, task=job["task"], project_name=proj.name,
                               verify_hint=self._verify_hint(proj), feedback=d.get("feedback", ""))
-        res = self.worker.run(WorkerTask(jid, prompt, wt.path, readonly=False, label=f"w{d.get('repairs', 0)}"))
+        try:
+            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=False, label=f"w{d.get('repairs', 0)}"))
+        except BudgetExceeded as e:
+            self._fail(jid, str(e))
         self.store.update_data(jid, worker_output=redact(res.output, 6000))
         self.store.event(jid, "worker", f"rc={res.returncode}{' (timeout)' if res.timed_out else ''}")
         if not res.ok:
@@ -293,9 +329,13 @@ class Engine:
         extra = f"## Diff to review\n```diff\n{diff['patch']}\n```\n\n{REVIEW_FORMAT}"
         prompt = build_prompt(self.roles["reviewer"], task=f"Review the change made for this task:\n{job['task']}",
                               project_name=proj.name, extra=extra)
-        res = self.worker.run(WorkerTask(jid, prompt, wt.path, readonly=True, label="rev"))
-        report = redact(res.output, 6000)
-        verdict = parse_verdict(report) if res.ok else "BLOCK"
+        try:
+            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="rev"))
+            report = redact(res.output, 6000)
+            verdict = parse_verdict(report) if res.ok else "BLOCK"
+        except BudgetExceeded as e:
+            # the change itself is done and verified: skip the review (fail safe = BLOCK) and let a human decide
+            report, verdict = f"review skipped: {e}", "BLOCK"
         self.store.update_data(jid, review=report, review_verdict=verdict)
         self.store.event(jid, "review", verdict)
         self._advance(jid, "apply")
@@ -315,11 +355,10 @@ class Engine:
             self._advance(jid, "verify")
             return
         head_sha = gitops.head(wt.path)
-        review_on = self.settings.review_pass and "reviewer" in self.roles
         summary = (f"Apply to {proj.name}@{proj.default_branch}\nTask: {job['task'][:400]}\n\n{d.get('diffstat', '')}\n\n"
                    f"verified: {d.get('verified')}   review: {d.get('review_verdict')}   commit: {head_sha[:10]}")
         self._gate(job, proj, policy.APPLY, {"head_sha": head_sha}, summary,
-                   verified=bool(d.get("verified")), review_ok=(d.get("review_verdict") == "APPROVE") if review_on else True)
+                   verified=bool(d.get("verified")), review_ok=d.get("review_verdict") == "APPROVE")  # no review => not ok => tier 3 asks a human
         try:
             m = gitops.merge_into_checkout(proj.path, wt.branch, head_sha, proj.default_branch)
         except gitops.GitError as e:

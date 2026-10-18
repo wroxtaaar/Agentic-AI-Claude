@@ -1,0 +1,44 @@
+# Roles = persona files (vendored from msitarzewski/agency-agents, MIT) + what the role may do.
+# kind: change   -> edits files in a throwaway worktree
+# kind: readonly -> sandbox mounts the worktree read-only; output is a report
+# Job kinds map to roles via `job_roles`; a job may name any role whose kind fits.
+roles:
+  engineer:
+    kind: change
+    description: Makes the smallest correct change that solves the task.
+    personas: [engineering-minimal-change-engineer.md, engineering-code-reviewer.md]
+  tester:
+    kind: change
+    description: Adds or repairs automated tests.
+    personas: [testing-test-automation-engineer.md]
+  devops:
+    kind: change
+    description: Changes Dockerfiles, compose files, CI and deploy scripts.
+    personas: [engineering-devops-automator.md, engineering-minimal-change-engineer.md]
+  reviewer:
+    kind: readonly
+    description: Second-pass review of a finished diff. Must end with VERDICT line.
+    personas: [engineering-code-reviewer.md, security-ai-generated-code-auditor.md]
+  investigator:
+    kind: readonly
+    description: Explains how a project works and diagnoses bugs without changing anything.
+    personas: [engineering-codebase-onboarding-engineer.md, engineering-software-architect.md]
+  sre:
+    kind: readonly
+    description: Triage of runtime incidents from logs, state and code.
+    personas: [engineering-sre.md, engineering-incident-response-commander.md]
+  security:
+    kind: readonly
+    description: Finds leaked secrets and risky configuration; never prints secret values.
+    personas: [security-secrets-credential-engineer.md, security-ai-generated-code-auditor.md]
+  git:
+    kind: readonly
+    description: Advises on branching/merge/history questions.
+    personas: [engineering-git-workflow-master.md]
+
+job_roles:
+  change: engineer
+  investigate: investigator
+  incident: sre
+  security_review: security
+  review: reviewer

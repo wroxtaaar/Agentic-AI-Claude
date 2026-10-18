@@ -1,0 +1,2 @@
+Persona files in this directory are copied unmodified from https://github.com/msitarzewski/agency-agents
+(MIT License, see LICENSE.agency-agents). They are trimmed and wrapped at load time by vpsagents/roles.py.

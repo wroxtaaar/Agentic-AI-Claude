@@ -1,0 +1,42 @@
+data_dir: /var/lib/vps-agents          # state.db + worktrees live here (NOT inside your projects)
+
+sandbox:
+  mode: docker                          # "local" = no isolation, tests only
+  image: vpsa-agent:latest
+  gateway_network: vpsa-gateway         # docker network --internal; only FreeLLMAPI is attached
+  memory: 2g
+  cpus: "2"
+  timeout_seconds: 1800
+
+llm:                                    # FreeLLMAPI (OpenAI-compatible)
+  base_url: http://freellmapi:3001/v1
+  api_key_env: FREELLMAPI_API_KEY       # read from the environment, never from this file
+  model: auto
+
+worker:
+  # argv run INSIDE the sandbox. Placeholders: {prompt} {prompt_file} {workdir}. Choose after the probe/spike.
+  # Example shape only (verify your agent's real flags):
+  #   command: ["your-agent", "--non-interactive", "--prompt-file", "{prompt_file}"]
+  command: null
+
+max_repairs: 2                          # verify-fail -> feed output back to the worker, up to N times
+review_pass: true                       # second model pass must end with "VERDICT: APPROVE" for tier-3 auto-apply
+approval_ttl_minutes: 720
+
+projects:
+  - name: torrent-studio
+    path: /home/ubuntu/torrent-studio
+    tier: 2                             # 0 observe | 1 propose | 2 assisted | 3 trusted
+    default_branch: main
+    containers: [torrent-studio]
+    health_url: http://127.0.0.1:8000/health
+    deploy_command: [docker, compose, up, -d, --build]   # argv list, never a shell string
+    verify_commands:
+      - [python3, -m, unittest, discover]
+    verify_network: none                # "bridge" only if tests truly need the internet
+
+  - name: notes-app
+    path: /home/ubuntu/notes-app
+    tier: 0                             # watch only: incidents + investigations
+    containers: [notes-app]
+    health_url: http://127.0.0.1:9000/health

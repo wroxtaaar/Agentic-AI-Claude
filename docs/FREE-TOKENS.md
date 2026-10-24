@@ -84,6 +84,17 @@ sandbox and FreeLLMAPI that counts per job; that is a possible next step.
 A rough way to size the daily cap: `daily free requests you actually have ÷ typical requests per run`. Measure the
 second number from FreeLLMAPI's usage page after a few real jobs, then set the cap a bit under your real daily budget.
 
+## Strong models for architecture, weak models for the work
+
+A change job now runs: **architect plan (strong) → engineer edits (weak) → verify → [architect diagnosis (strong) if it keeps failing] → reviewer (strong)**.
+Read-only jobs (investigate, incident, security) use the `analyst` class. Set the names under `llm.models`.
+
+- Strong picks: the largest reasoning/coding models your gateway offers (e.g. a 70B+/frontier-class free model). Weak picks: small, fast, high-quota models.
+- Why it saves tokens: planning and review are 2-3 short strong calls per job; the many tool-call-heavy editing turns run on the cheap model.
+- Cap the scarce ones with `max_strong_runs_per_day`. When it is hit, planning is skipped (worker proceeds), diagnosis is skipped, and review fails safe to BLOCK so a human decides.
+- A weak worker only gets the plan as text; it can still edit only inside the throwaway worktree, and verification and review are unchanged.
+- Limit: the count is worker *sessions*, not inner model requests (same as the other budgets).
+
 ## 7. Stretching what you have
 
 - `review_pass: false` saves one of a job's usual two runs. You lose the second-opinion verdict, so tier-3 projects

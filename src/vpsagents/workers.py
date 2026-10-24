@@ -17,6 +17,7 @@ class WorkerTask:
     workdir: Path
     readonly: bool
     label: str = "work"
+    model: str | None = None  # None = settings.llm.model
 
 
 class Worker:
@@ -43,8 +44,9 @@ class CommandWorker(Worker):
                     part = part.replace(k, v)
                 cmd.append(part)
             key = llm.api_key()
-            env = {"LLM_BASE_URL": llm.base_url, "LLM_MODEL": llm.model,
-                   "OPENAI_BASE_URL": llm.base_url, "OPENAI_API_BASE": llm.base_url, "OPENAI_MODEL": llm.model}
+            model = task.model or llm.model
+            env = {"LLM_BASE_URL": llm.base_url, "LLM_MODEL": model,
+                   "OPENAI_BASE_URL": llm.base_url, "OPENAI_API_BASE": llm.base_url, "OPENAI_MODEL": model}
             if key:
                 env.update({"LLM_API_KEY": key, "OPENAI_API_KEY": key})
             spec = SandboxSpec(name=f"vpsa-{task.job_id}-{task.label}", command=cmd, workdir=task.workdir,

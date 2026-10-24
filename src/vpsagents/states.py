@@ -17,7 +17,7 @@ TRANSITIONS = {
 }
 
 # Stages a job moves through (resting points are re-entered after an approval).
-STAGES = ("start", "work", "verify", "review", "apply", "deploy", "restart")
+STAGES = ("start", "plan", "work", "verify", "review", "apply", "deploy", "restart")
 
 # job kinds
 READONLY_KINDS = frozenset({"investigate", "incident", "security_review"})

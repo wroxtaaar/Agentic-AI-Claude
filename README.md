@@ -121,6 +121,10 @@ curl -H "$H" -d '{"project":"torrent-studio","kind":"restart","task":"torrent-st
 Job kinds: `change`, `investigate`, `incident`, `security_review`, `restart`. The monitor opens `incident` jobs itself
 (two consecutive failures, de-duplicated, cooldown) and notifies you; it never restarts anything.
 
+## Model tiers
+
+`llm.models` maps `architect` / `reviewer` / `analyst` / `worker` (or any role name) to a gateway model. The architect writes a plan, the worker edits, the architect diagnoses repeated verification failures, the reviewer checks the diff. See `docs/FREE-TOKENS.md`.
+
 ## Roles (from agency-agents)
 
 `src/vpsagents/roles/roles.yaml` maps roles to persona files vendored from

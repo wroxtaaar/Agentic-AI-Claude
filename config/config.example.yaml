@@ -12,6 +12,14 @@ llm:                                    # FreeLLMAPI (OpenAI-compatible)
   base_url: http://freellmapi:3001/v1
   api_key_env: FREELLMAPI_API_KEY       # read from the environment, never from this file
   model: auto
+  # Strong models think, weak models type. Classes: architect (plans + diagnoses), reviewer, analyst
+  # (investigator/sre/security/git reports), worker (roles that edit files). A role name beats its class.
+  # Pick names from `python -m vpsagents.probe` output; leave a class out to fall back to `model` above.
+  models:
+    architect: auto
+    reviewer: auto
+    analyst: auto
+    worker: auto
 
 worker:
   # argv run INSIDE the sandbox. Placeholders: {prompt} {prompt_file} {workdir}. Choose after the probe/spike.
@@ -23,6 +31,9 @@ worker:
 max_agent_runs_per_job: 8               # a runaway repair loop stops here
 max_agent_runs_per_day: 150             # UTC day across all jobs; null = unlimited. Set a bit under your real daily budget
 max_repairs: 2                          # verify-fail -> feed output back to the worker, up to N times
+architect_plan: true                     # strong model writes a plan before the weak worker edits
+escalate_after_failures: 2              # after 2 failed verifications the architect diagnoses for the worker
+max_strong_runs_per_day: null           # cap strong-model sessions separately (free tiers are scarce)
 review_pass: true                       # second model pass must end with "VERDICT: APPROVE" for tier-3 auto-apply
 approval_ttl_minutes: 720
 

@@ -88,7 +88,13 @@ class SandboxSettings(BaseModel):
 class LLMSettings(BaseModel):
     base_url: str = "http://freellmapi:3001/v1"
     api_key_env: str = "FREELLMAPI_API_KEY"
-    model: str = "auto"
+    model: str = "auto"  # default for anything not overridden below
+    # Model per role CLASS or role name. Classes: architect (plans, diagnoses), reviewer, analyst (read-only
+    # investigate/incident/security roles), worker (roles that edit files). A role name beats its class.
+    models: dict[str, str] = Field(default_factory=dict)
+
+    def model_for(self, role_name: str, cls: str) -> str:
+        return self.models.get(role_name) or self.models.get(cls) or self.model
 
     def api_key(self) -> str:
         return os.environ.get(self.api_key_env, "")
@@ -117,6 +123,11 @@ class Settings(BaseModel):
     max_agent_runs_per_job: int = Field(default=8, ge=1, le=100)
     max_agent_runs_per_day: int | None = Field(default=None, ge=1)  # None = unlimited; UTC day
     review_pass: bool = True
+    architect_plan: bool = True  # a strong model writes a short plan before the (weaker) worker edits
+    # After this many failed verifications, the architect diagnoses the failure for the worker. None = never.
+    escalate_after_failures: int | None = Field(default=2, ge=1, le=10)
+    # Strong-model runs (architect/reviewer/analyst) are scarce on free tiers; cap them separately. UTC day.
+    max_strong_runs_per_day: int | None = Field(default=None, ge=1)
     approval_ttl_minutes: int = Field(default=720, ge=1)
     max_concurrent_jobs: int = Field(default=2, ge=1, le=8)
     deploy_timeout_seconds: int = 900

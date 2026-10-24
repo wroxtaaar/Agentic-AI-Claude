@@ -102,6 +102,24 @@ def build_prompt(role: Role, *, task: str, project_name: str, personas_dir: Path
     return "\n\n".join(sections) + "\n"
 
 
+PLAN_FORMAT = """Write a short plan (max ~400 words) for a LESS CAPABLE engineer who will make the edits after you.
+Use these headings: Files to change (exact paths) / Steps (numbered, concrete) / Do NOT touch / How it is verified / Risks.
+Read the code first and cite file names you actually saw. Do not write the full implementation. Do not invent files."""
+
+DIAGNOSE_FORMAT = """The engineer's change failed verification. Diagnose the cause from the diff and the verification output below,
+then give exact, minimal instructions to fix it (which file, what to change, why). Max ~300 words.
+If the plan itself was wrong, say so and give a corrected plan. Do not write the whole file."""
+
+ROLE_CLASS_READONLY = "analyst"
+
+
+def role_class(role: "Role") -> str:
+    """Model class used to pick a model: architect | reviewer | analyst | worker."""
+    if role.name in ("architect", "reviewer"):
+        return role.name
+    return "worker" if role.kind == "change" else ROLE_CLASS_READONLY
+
+
 _VERDICT = re.compile(r"(?m)^\s*VERDICT:\s*(APPROVE|BLOCK)\s*$")
 
 

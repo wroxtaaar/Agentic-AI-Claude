@@ -50,6 +50,8 @@ class Env(unittest.TestCase):
     verify = True
     health = True
     review = True
+    plan = False  # new tiering features are off unless a test opts in
+    escalate = None
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -60,7 +62,8 @@ class Env(unittest.TestCase):
                        health_url="http://health.invalid/" if self.health else None,
                        verify_commands=[VERIFY_OK] if self.verify else [])
         self.settings = Settings(data_dir=self.root / "data", sandbox=SandboxSettings(mode="local"),
-                                 projects=[proj], review_pass=self.review, health_timeout_seconds=1, max_repairs=2)
+                                 projects=[proj], review_pass=self.review, architect_plan=self.plan,
+                                 escalate_after_failures=self.escalate, health_timeout_seconds=1, max_repairs=2)
         self.store = Store(":memory:")
         self.notes = Notes()
         self.healthy = True
@@ -78,6 +81,10 @@ class Env(unittest.TestCase):
         self.calls.append(task.label)
         if task.label == "rev":
             return f"looks fine\n{self.verdict}"
+        if task.label == "plan":
+            return "Files: x.txt. Steps: write 'new'."
+        if task.label == "diag":
+            return "x.txt must contain 'new'."
         if task.label == "ro":
             return "report: all good"
         content = self.write(task) if callable(self.write) else self.write

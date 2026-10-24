@@ -15,6 +15,10 @@ roles:
     kind: change
     description: Changes Dockerfiles, compose files, CI and deploy scripts.
     personas: [engineering-devops-automator.md, engineering-minimal-change-engineer.md]
+  architect:
+    kind: readonly
+    description: Plans a change for a less capable engineer and diagnoses failed attempts. Never edits.
+    personas: [engineering-software-architect.md, engineering-minimal-change-engineer.md]
   reviewer:
     kind: readonly
     description: Second-pass review of a finished diff. Must end with VERDICT line.

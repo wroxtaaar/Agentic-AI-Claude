@@ -13,6 +13,14 @@ llm:
   base_url: http://freellmapi:3001/v1
   api_key_env: FREELLMAPI_API_KEY
   model: auto                               # replace with a model that passed `python -m vpsagents.probe`
+  # Strong models think, weak models type. Classes: architect (plans + diagnoses), reviewer, analyst
+  # (investigator/sre/security/git reports), worker (roles that edit files). A role name beats its class.
+  # Pick names from `python -m vpsagents.probe` output; leave a class out to fall back to `model` above.
+  models:
+    architect: auto
+    reviewer: auto
+    analyst: auto
+    worker: auto
 
 worker:
   command: null                             # <-- set after you pick a coding agent (see README "Choosing the worker")
@@ -45,3 +53,4 @@ projects:
           /tmp/v/bin/pip install -q -r requirements.txt pytest &&
           /tmp/v/bin/python -m pytest -q tests
     verify_network: bridge                  # needed so pip can download packages during verify
+max_strong_runs_per_day: 30

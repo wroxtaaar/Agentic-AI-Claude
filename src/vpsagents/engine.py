@@ -20,7 +20,8 @@ from . import states as S
 from .config import Project, Settings
 from .notify import Notifier
 from .redact import redact
-from .roles import REVIEW_FORMAT, build_prompt, load_roles, parse_verdict
+from .roles import (DIAGNOSE_FORMAT, PLAN_FORMAT, REVIEW_FORMAT, build_prompt, load_roles, parse_verdict,
+                    role_class)
 from .sandbox import Sandbox, SandboxSpec
 from .store import Store
 from .workers import Worker, WorkerTask
@@ -152,16 +153,29 @@ class Engine:
     def _day_key() -> str:
         return "agent_runs:" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _strong_key() -> str:
+        return "strong_runs:" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     def budget_status(self) -> dict:
         st = self.settings
         used = self.store.counter_get(self._day_key())
-        return {"agent_runs_today": used, "max_agent_runs_per_day": st.max_agent_runs_per_day,
+        strong = self.store.counter_get(self._strong_key())
+        return {"strong_runs_today": strong, "max_strong_runs_per_day": st.max_strong_runs_per_day,"agent_runs_today": used, "max_agent_runs_per_day": st.max_agent_runs_per_day,
                 "max_agent_runs_per_job": st.max_agent_runs_per_job,
                 "remaining_today": None if st.max_agent_runs_per_day is None else max(0, st.max_agent_runs_per_day - used)}
 
-    def _run_worker(self, job: dict, task: WorkerTask):
-        """Every worker session goes through here so free-tier quota can't be burned by a loop."""
+    def _run_worker(self, job: dict, task: WorkerTask, role=None):
+        """Every worker session goes through here so free-tier quota can't be burned by a loop.
+        `role` picks the model: strong classes (architect/reviewer/analyst) vs the worker class."""
         jid = job["id"]
+        if role is not None:
+            cls = role_class(role)
+            task.model = self.settings.llm.model_for(role.name, cls)
+            if cls != "worker":
+                cap = self.settings.max_strong_runs_per_day
+                if cap is not None and self.store.counter_get(self._strong_key()) >= cap:
+                    raise BudgetExceeded(f"daily strong-model budget reached ({cap}); raise max_strong_runs_per_day")
         n = self.store.get_job(jid)["data"].get("agent_runs", 0)
         if n >= self.settings.max_agent_runs_per_job:
             raise BudgetExceeded(f"agent-run budget for this job exhausted ({n}/{self.settings.max_agent_runs_per_job})")
@@ -169,6 +183,8 @@ class Engine:
         if limit is not None and self.store.counter_get(self._day_key()) >= limit:
             raise BudgetExceeded(f"daily agent-run budget reached ({limit}); resubmit tomorrow or raise max_agent_runs_per_day")
         self.store.counter_incr(self._day_key())
+        if role is not None and role_class(role) != "worker":
+            self.store.counter_incr(self._strong_key())
         self.store.update_data(jid, agent_runs=n + 1)
         return self.worker.run(task)
 
@@ -257,9 +273,45 @@ class Engine:
         elif job["kind"] in S.CHANGE_KINDS:
             bind = {"task_sha": hashlib.sha256(job["task"].encode()).hexdigest()[:16]}
             self._gate(job, proj, policy.START_CHANGE, bind, f"Start change job on {proj.name}:\n{job['task'][:600]}")
-            self._advance(jid, "work")
+            planning = self.settings.architect_plan and "architect" in self.roles and self.roles[job["role"]].kind == "change"
+            self._advance(jid, "plan" if planning else "work")
         else:
             self._advance(jid, "restart")
+
+    def _stage_plan(self, job, proj):
+        """Strong model writes a plan; the weaker worker follows it. Planning is best-effort: if it fails or
+        the budget is gone, the worker proceeds without one."""
+        jid, d = job["id"], job["data"]
+        if not d.get("worktree"):
+            self._sync_remote(job, proj)
+        wt = self._worktree(job, proj, branch=True)
+        arch = self.roles["architect"]
+        prompt = build_prompt(arch, task=job["task"], project_name=proj.name, extra=PLAN_FORMAT)
+        try:
+            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="plan"), arch)
+            plan = redact(res.output, 6000) if res.ok else ""
+        except BudgetExceeded as e:
+            plan = ""
+            self.store.event(jid, "plan", f"skipped: {e}")
+        self.store.update_data(jid, plan=plan)
+        self.store.event(jid, "plan", "written" if plan else "none; worker proceeds without a plan")
+        self._advance(jid, "work")
+
+    def _diagnose(self, job, proj, wt, verify_text: str) -> str:
+        """Strong model explains a failed verification to the weaker worker. Best-effort."""
+        if "architect" not in self.roles:
+            return ""
+        arch = self.roles["architect"]
+        diff = gitops.diff_summary(wt)
+        extra = (f"## Current diff\n```diff\n{diff['patch'][:12000]}\n```\n\n"
+                 f"## Verification output\n{verify_text[-3000:]}\n\n{DIAGNOSE_FORMAT}")
+        prompt = build_prompt(arch, task=job["task"], project_name=proj.name, extra=extra)
+        try:
+            res = self._run_worker(job, WorkerTask(job["id"], prompt, wt.path, readonly=True, label="diag"), arch)
+        except BudgetExceeded as e:
+            self.store.event(job["id"], "diagnose", f"skipped: {e}")
+            return ""
+        return redact(res.output, 3000) if res.ok else ""
 
     def _stage_work(self, job, proj):
         jid, d = job["id"], job["data"]
@@ -268,7 +320,7 @@ class Engine:
             wt = self._worktree(job, proj, branch=False)
             prompt = build_prompt(role, task=job["task"], project_name=proj.name)
             try:
-                res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="ro"))
+                res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="ro"), role)
             except BudgetExceeded as e:
                 self._fail(jid, str(e))
             report = redact(res.output, 20000)
@@ -279,10 +331,13 @@ class Engine:
         if not d.get("worktree"):
             self._sync_remote(job, proj)  # start from what is actually on the remote
         wt = self._worktree(job, proj, branch=True)
-        prompt = build_prompt(role, task=job["task"], project_name=proj.name,
+        plan = d.get("plan", "")
+        extra = ("## Plan from the architect (follow it; if it is wrong, make the smallest correct change and say why)\n"
+                 + plan) if plan else ""
+        prompt = build_prompt(role, task=job["task"], project_name=proj.name, extra=extra,
                               verify_hint=self._verify_hint(proj), feedback=d.get("feedback", ""))
         try:
-            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=False, label=f"w{d.get('repairs', 0)}"))
+            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=False, label=f"w{d.get('repairs', 0)}"), role)
         except BudgetExceeded as e:
             self._fail(jid, str(e))
         self.store.update_data(jid, worker_output=redact(res.output, 6000))
@@ -328,7 +383,14 @@ class Engine:
             return
         repairs = d.get("repairs", 0)
         if repairs < self.settings.max_repairs:
-            self.store.update_data(jid, repairs=repairs + 1, feedback=text[-3000:])
+            feedback = text[-3000:]
+            esc = self.settings.escalate_after_failures
+            if esc is not None and repairs + 1 >= esc:
+                diag = self._diagnose(job, proj, wt, text)
+                if diag:
+                    feedback = "## Architect diagnosis (follow this)\n" + diag + "\n\n## Raw verification output\n" + feedback[-1500:]
+                    self.store.event(jid, "diagnose", "architect diagnosis added")
+            self.store.update_data(jid, repairs=repairs + 1, feedback=feedback)
             self._advance(jid, "work")
             return
         self._fail(jid, f"verification failed after {repairs} repair attempt(s)")
@@ -346,7 +408,8 @@ class Engine:
         prompt = build_prompt(self.roles["reviewer"], task=f"Review the change made for this task:\n{job['task']}",
                               project_name=proj.name, extra=extra)
         try:
-            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="rev"))
+            res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="rev"),
+                                   self.roles["reviewer"])
             report = redact(res.output, 6000)
             verdict = parse_verdict(report) if res.ok else "BLOCK"
         except BudgetExceeded as e:

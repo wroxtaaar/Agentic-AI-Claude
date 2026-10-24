@@ -8,8 +8,27 @@ import sys
 from .config import load_settings
 
 
+def publish_problems(settings) -> list[str]:
+    import os
+    out = []
+    for p in settings.projects:
+        if p.publish != "push_main" or not p.path.is_dir():
+            continue
+        r = subprocess.run(["git", "-C", str(p.path), "remote", "get-url", p.remote], capture_output=True, text=True)
+        if r.returncode != 0:
+            out.append(f"{p.name}: publish=push_main but git remote '{p.remote}' does not exist")
+            continue
+        if r.stdout.strip().startswith("https://") and not os.environ.get(p.push_token_env):
+            out.append(f"{p.name}: https remote needs a token in env {p.push_token_env} (fine-grained PAT, Contents: read/write, this repo only)")
+        if p.tier >= 3 and not p.health_url:
+            out.append(f"{p.name}: tier 3 + publish without health_url will always ask before pushing")
+        if p.deploy_command:
+            out.append(f"{p.name}: publish=push_main AND deploy_command set; make sure your CI is not also deploying (double deploy)")
+    return out
+
+
 def _check(settings) -> int:
-    problems = []
+    problems = publish_problems(settings)
     for p in settings.projects:
         if not p.path.is_dir():
             problems.append(f"{p.name}: path does not exist: {p.path}")

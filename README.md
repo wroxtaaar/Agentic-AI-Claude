@@ -13,7 +13,7 @@ you ──HTTP──> API ──> job queue ──> engine ──> sandbox conta
 
 ## Status (read this first)
 
-Built and tested here (70 tests, real git repos, stubbed model): policy matrix, job state machine, approvals bound to
+Built and tested here (86 tests, real git repos, stubbed model): policy matrix, job state machine, approvals bound to
 commit SHA, worktree/merge/rollback safety, diff vetting (secrets, symlinks), repair loop, review verdict gate,
 incident monitor, HTTP API + auth, redaction, role/persona loading, gateway probe.
 
@@ -85,6 +85,28 @@ Shows which gateway models return valid tool calls. Pick one coding agent that c
 OpenAI-compatible endpoint, install it in `docker/Dockerfile.agent`, and set `worker.command`. The env it receives:
 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` plus `OPENAI_*` aliases.
 
+## Publishing to your remote (`publish: push_main`)
+
+For projects that already deploy from Git (for example a GitHub Actions workflow that runs on every push to `main`),
+set `publish: push_main`. After you approve, the control plane merges the tested change into the checkout and then
+**pushes it to `origin/main`**; your own workflow takes over from there. Branches and PRs are not used.
+
+- The approval summary says `WILL PUSH to origin/main`. Approving it is the deploy decision.
+- Before work starts and before applying, the checkout is synced with the remote (fast-forward only). If the local
+  branch has unpushed commits, has diverged, or is dirty while behind, the job stops and touches nothing.
+- If the remote moves while a change is waiting, the change is rebased, re-verified and approval is asked again.
+- If the push is rejected (someone pushed first), the local merge is rolled back so no unpushed commit is left for a
+  later `git reset --hard origin/main` to silently drop. Pushes are never forced.
+- The token (`push_token_env`) lives only in the control plane's environment, is handed to git through a host-scoped
+  environment variable (not argv, not the remote URL, not disk) and is never given to the sandbox. Use a fine-grained
+  token limited to that one repo with *Contents: read/write*; leaving out *Workflows* also means agents cannot push
+  changes to your workflow files.
+- A pushed deploy is **not** auto-rolled-back by this system (GitHub deploys it). The monitor's health check will open
+  an incident; at tier 3 auto-push additionally requires a `health_url`.
+- Leave `deploy_command` unset for these projects, or you will deploy twice.
+
+A ready example for `terabox-telegram-bot` is in `config/config.terabox-bot.yaml`.
+
 ## Using it
 
 ```bash
@@ -112,7 +134,7 @@ experience, no claims of unrun checks, no secrets). Roles: `engineer`, `tester`,
 - No web UI yet (curl/API only). A small approvals page + Telegram approve buttons would be the next convenience.
 - Failed jobs keep their worktree for inspection; there is no garbage collector yet.
 - Auto-restart on incident for tier-3 projects is not implemented (the monitor only triages).
-- `push` to a remote is intentionally not implemented; merges stay local until you push.
+- No branches or pull requests: publishing is a direct push to the default branch (`publish: push_main`). Use branch protection on GitHub if you want a hard backstop.
 - The budget guard counts agent runs (worker sessions), not individual model requests inside a run; bound those with your agent's max-steps flag and `sandbox.timeout_seconds`.
 - One running job per project; jobs for different projects run in parallel (`max_concurrent_jobs`).
 

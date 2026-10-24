@@ -1,0 +1,47 @@
+# Ready-to-edit config for wroxtaaar/terabox-telegram-bot.  Copy to config.yaml and adjust the marked lines.
+# NOT tested against your VPS. Check with:  vpsagents check --config config.yaml
+
+data_dir: /home/ubuntu/vps-agents-data     # state.db + worktrees (outside your project folders)
+
+sandbox:
+  mode: docker
+  image: vpsa-agent:latest
+  gateway_network: vpsa-gateway
+  timeout_seconds: 1800
+
+llm:
+  base_url: http://freellmapi:3001/v1
+  api_key_env: FREELLMAPI_API_KEY
+  model: auto                               # replace with a model that passed `python -m vpsagents.probe`
+
+worker:
+  command: null                             # <-- set after you pick a coding agent (see README "Choosing the worker")
+
+max_agent_runs_per_job: 8
+max_agent_runs_per_day: 100                 # set a bit under your real daily free quota
+review_pass: true
+
+projects:
+  - name: terabox-telegram-bot
+    path: /home/ubuntu/terabox-telegram-bot # your live checkout (the one your deploy workflow resets)
+    tier: 2                                 # you approve each apply+push. Raise to 3 only after you trust it
+    default_branch: main
+
+    # Agents commit straight to main, as you asked. After you approve, the control plane merges the
+    # tested change and pushes it to origin/main. Your "Deploy Oracle VPS" workflow then deploys it.
+    publish: push_main
+    remote: origin
+    push_token_env: VPSA_GITHUB_TOKEN       # fine-grained PAT: only this repo, Contents read/write, NO "Workflows"
+
+    containers: [terabox-vps-worker]        # from vps/docker-compose.yml
+    health_url: http://127.0.0.1:18080/health   # the same URL your deploy workflow polls
+    deploy_command: null                    # GitHub Actions deploys on push; do not also deploy from here
+
+    verify_commands:                        # runs in the sandbox on the agent's copy, never on your checkout
+      - - sh
+        - -c
+        - >-
+          python3 -m venv /tmp/v &&
+          /tmp/v/bin/pip install -q -r requirements.txt pytest &&
+          /tmp/v/bin/python -m pytest -q tests
+    verify_network: bridge                  # needed so pip can download packages during verify

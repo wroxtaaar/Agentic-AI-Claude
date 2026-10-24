@@ -54,12 +54,14 @@ def decide(tier: int, action: str) -> Decision:
 
 def downgrade_if_unsafe(decision: Decision, *, action: str, verified: bool = True,
                         review_ok: bool = True, has_healthcheck: bool = True,
-                        deploy_ok: bool = True) -> Decision:
+                        deploy_ok: bool = True, publishes: bool = False) -> Decision:
     """An AUTO decision is only honoured when its safety preconditions hold; otherwise ask a human."""
     if decision.mode != AUTO:
         return decision
     if action == APPLY and not (verified and review_ok):
         return Decision(APPROVAL, "auto-apply needs passing verification and an APPROVE review verdict")
+    if action == APPLY and publishes and not has_healthcheck:
+        return Decision(APPROVAL, "auto-push triggers an external deploy; needs a health check to notice a bad one")
     if action in (DEPLOY, RESTART) and not has_healthcheck:
         return Decision(APPROVAL, "auto-deploy/restart needs a health check to detect failure")
     if action == DEPLOY and not deploy_ok:

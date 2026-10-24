@@ -212,6 +212,20 @@ class Engine:
         self.notifier.send(f"🛂 approval needed: {job['project']} / {action}\njob {job['id']}  approval {ap['id']}\n{summary[:700]}")
         raise _Stop
 
+    def _token(self, proj: Project) -> str | None:
+        import os
+        return os.environ.get(proj.push_token_env) or None
+
+    def _sync_remote(self, job: dict, proj: Project) -> None:
+        if proj.publish != "push_main":
+            return
+        try:
+            r = gitops.sync_with_remote(proj.path, proj.remote, proj.default_branch, self._token(proj))
+        except gitops.GitError as e:
+            self._fail(job["id"], f"cannot sync with {proj.remote}/{proj.default_branch}: {e}")
+        if r != "in_sync":
+            self.store.event(job["id"], "sync", f"local {proj.default_branch} {r.replace('_', ' ')} to {proj.remote}")
+
     def _cleanup(self, job: dict) -> None:
         d = job["data"]
         wt = d.get("worktree")
@@ -262,6 +276,8 @@ class Engine:
                 self.store.update_data(jid, report=report)
                 self._fail(jid, f"worker failed (rc={res.returncode}{', timeout' if res.timed_out else ''})")
             self._done(jid, report=report)
+        if not d.get("worktree"):
+            self._sync_remote(job, proj)  # start from what is actually on the remote
         wt = self._worktree(job, proj, branch=True)
         prompt = build_prompt(role, task=job["task"], project_name=proj.name,
                               verify_hint=self._verify_hint(proj), feedback=d.get("feedback", ""))
@@ -343,6 +359,7 @@ class Engine:
     def _stage_apply(self, job, proj):
         jid, d = job["id"], job["data"]
         wt = self._worktree(job, proj, branch=True)
+        self._sync_remote(job, proj)
         if gitops.base_moved(proj.path, wt, proj.default_branch):
             if d.get("rebases", 0) >= MAX_REBASES:
                 self._fail(jid, "base branch keeps moving; giving up after rebases")
@@ -355,20 +372,37 @@ class Engine:
             self._advance(jid, "verify")
             return
         head_sha = gitops.head(wt.path)
-        summary = (f"Apply to {proj.name}@{proj.default_branch}\nTask: {job['task'][:400]}\n\n{d.get('diffstat', '')}\n\n"
+        publishes = proj.publish == "push_main"
+        push_note = (f"\n*** WILL PUSH to {proj.remote}/{proj.default_branch}: this triggers whatever deploys on push to that branch ***\n"
+                     if publishes else "")
+        summary = (f"Apply to {proj.name}@{proj.default_branch}{push_note}\nTask: {job['task'][:400]}\n\n{d.get('diffstat', '')}\n\n"
                    f"verified: {d.get('verified')}   review: {d.get('review_verdict')}   commit: {head_sha[:10]}")
-        self._gate(job, proj, policy.APPLY, {"head_sha": head_sha}, summary,
-                   verified=bool(d.get("verified")), review_ok=d.get("review_verdict") == "APPROVE")  # no review => not ok => tier 3 asks a human
+        self._gate(job, proj, policy.APPLY, {"head_sha": head_sha, "push": publishes}, summary,
+                   verified=bool(d.get("verified")), review_ok=d.get("review_verdict") == "APPROVE",  # no review => not ok => tier 3 asks
+                   publishes=publishes, has_healthcheck=bool(proj.health_url))
         try:
             m = gitops.merge_into_checkout(proj.path, wt.branch, head_sha, proj.default_branch)
         except gitops.GitError as e:
             self._fail(jid, f"merge refused: {e}")
         self.store.update_data(jid, **m)
         self.store.event(jid, "applied", f"{m['pre_sha'][:10]} -> {m['merged_sha'][:10]}")
+        if publishes:
+            try:
+                gitops.push_branch(proj.path, proj.remote, proj.default_branch, m["merged_sha"], self._token(proj))
+            except gitops.GitError as e:
+                try:  # never leave an unpushed merge behind: the next deploy reset would silently drop it
+                    gitops.rollback_checkout(proj.path, proj.default_branch, m["merged_sha"], m["pre_sha"])
+                    undo = "local merge rolled back"
+                except gitops.GitError as e2:
+                    undo = f"local merge NOT rolled back ({e2})"
+                self._fail(jid, f"push to {proj.remote}/{proj.default_branch} failed: {e}; {undo}")
+            self.store.update_data(jid, pushed=True)
+            self.store.event(jid, "pushed", f"{m['merged_sha'][:10]} -> {proj.remote}/{proj.default_branch}")
+            self.notifier.send(f"🚀 {proj.name}: pushed {m['merged_sha'][:10]} to {proj.remote}/{proj.default_branch}; your deploy workflow takes over")
         if job["deploy"]:
             self._advance(jid, "deploy")
             return
-        self._done(jid, result=f"applied {m['merged_sha'][:10]}")
+        self._done(jid, result=f"applied {m['merged_sha'][:10]}" + (" and pushed; your CI/deploy workflow takes over" if publishes else ""))
 
     def _stage_deploy(self, job, proj):
         jid, d = job["id"], job["data"]

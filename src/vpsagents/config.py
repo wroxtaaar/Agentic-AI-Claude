@@ -35,12 +35,24 @@ class Project(BaseModel):
     verify_commands: list[Argv] = Field(default_factory=list)
     # Network for verify runs. "none" is the safe default: dependencies must be baked into the image.
     verify_network: Literal["none", "bridge"] = "none"
+    # "push_main": after the (approved) merge into the checkout, push the default branch to `remote`.
+    # Use when something else (e.g. a GitHub Actions workflow) deploys on every push to that branch.
+    publish: Literal["none", "push_main"] = "none"
+    remote: str = "origin"
+    push_token_env: str = "VPSA_GITHUB_TOKEN"  # env var holding an https token; unused for ssh remotes
 
     @field_validator("name")
     @classmethod
     def _name(cls, v: str) -> str:
         if not _NAME.match(v):
             raise ValueError("project name must match [A-Za-z0-9][A-Za-z0-9_.-]*")
+        return v
+
+    @field_validator("remote", "default_branch")
+    @classmethod
+    def _gitname(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,99}", v) or ".." in v or v.endswith("/"):
+            raise ValueError("invalid git remote/branch name")
         return v
 
     @field_validator("deploy_command")

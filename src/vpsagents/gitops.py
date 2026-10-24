@@ -24,12 +24,16 @@ class GitError(Exception):
     pass
 
 
-def git(cwd: Path, *args: str, check: bool = True, timeout: int = 120) -> str:
+def git(cwd: Path, *args: str, check: bool = True, timeout: int = 120, extra_env: dict | None = None,
+        secret: str | None = None) -> str:
     import os
-    env = {**os.environ, **_ENV}
+    env = {**os.environ, **_ENV, **(extra_env or {})}
     p = subprocess.run([*_BASE, *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
     if check and p.returncode != 0:
-        raise GitError(redact((p.stderr or p.stdout).strip(), 2000))
+        msg = (p.stderr or p.stdout).strip()
+        if secret:
+            msg = msg.replace(secret, "[REDACTED]")
+        raise GitError(redact(msg, 2000))
     return p.stdout
 
 
@@ -141,3 +145,56 @@ def rollback_checkout(repo: Path, default_branch: str, merged_sha: str, pre_sha:
     if not is_clean(repo):
         raise GitError("checkout is dirty; not rolling back automatically")
     git(repo, "reset", "--hard", pre_sha)
+
+
+# ---------------------------------------------------------------- remote (publish) support
+def auth_env(repo: Path, remote: str, token: str | None) -> dict:
+    """Pass an https token to git through the ENVIRONMENT (never argv, never the remote URL, never disk).
+
+    Scoped to the remote's own host so the token cannot be sent anywhere else. ssh remotes need no token.
+    """
+    if not token:
+        return {}
+    url = git(repo, "remote", "get-url", remote).strip()
+    if not url.startswith("https://"):
+        return {}
+    import base64
+    host = url.split("/", 3)[2]
+    b64 = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"http.https://{host}/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {b64}"}
+
+
+def sync_with_remote(repo: Path, remote: str, branch: str, token: str | None = None) -> str:
+    """Fetch and bring the local default branch level with the remote. Returns 'in_sync' | 'fast_forwarded'.
+
+    Refuses (GitError) when local has unpushed commits or has diverged: that is somebody's work we must not touch.
+    """
+    env = auth_env(repo, remote, token)
+    git(repo, "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}",
+        extra_env=env, secret=token, timeout=180)
+    local, theirs = head(repo, branch), head(repo, f"refs/remotes/{remote}/{branch}")
+    if local == theirs:
+        return "in_sync"
+    if subprocess_ok(repo, "merge-base", "--is-ancestor", theirs, local):
+        raise GitError(f"local {branch} has commits that are not on {remote}/{branch}; push or discard them first")
+    if not subprocess_ok(repo, "merge-base", "--is-ancestor", local, theirs):
+        raise GitError(f"local {branch} and {remote}/{branch} have diverged; resolve manually")
+    if current_branch(repo) != branch:
+        raise GitError(f"checkout is on '{current_branch(repo)}', not '{branch}'; cannot fast-forward")
+    if not is_clean(repo):
+        raise GitError("checkout has uncommitted changes; cannot fast-forward to the remote")
+    git(repo, "merge", "--ff-only", theirs)
+    return "fast_forwarded"
+
+
+def subprocess_ok(repo: Path, *args: str) -> bool:
+    import os
+    p = subprocess.run([*_BASE, *args], cwd=repo, capture_output=True, text=True, env={**os.environ, **_ENV})
+    return p.returncode == 0
+
+
+def push_branch(repo: Path, remote: str, branch: str, sha: str, token: str | None = None) -> None:
+    """Fast-forward push of exactly `sha` to remote/branch. Never forced: a non-fast-forward is rejected by the server."""
+    git(repo, "push", "--quiet", remote, f"{sha}:refs/heads/{branch}",
+        extra_env=auth_env(repo, remote, token), secret=token, timeout=180)

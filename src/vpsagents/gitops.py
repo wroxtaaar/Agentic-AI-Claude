@@ -15,7 +15,7 @@ MAX_FILES = 200
 
 # no hooks, no pager, no prompts, no global config surprises
 _BASE = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never",
-         "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]  # signing needs a key/agent the control plane must not use
+         "-c", "core.excludesFile=/dev/null", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]  # signing needs a key/agent the control plane must not use
 _ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "vps-agents", "GIT_AUTHOR_EMAIL": "agents@localhost",
         "GIT_COMMITTER_NAME": "vps-agents", "GIT_COMMITTER_EMAIL": "agents@localhost"}

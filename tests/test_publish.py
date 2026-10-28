@@ -22,10 +22,10 @@ class PublishEnv(Env):
         self.settings.projects[0].publish = "push_main"
 
     def remote_head(self):
-        return sh(self.remote, "git", "rev-parse", "main")
+        return sh(self.root, "git", "--git-dir", str(self.remote), "rev-parse", "main")
 
     def remote_text(self):
-        return sh(self.remote, "git", "show", "main:x.txt").strip()
+        return sh(self.root, "git", "--git-dir", str(self.remote), "show", "main:x.txt").strip()
 
     def other_clone_commit(self, name="other", fname="other.txt", text="from someone else\n"):
         d = self.root / name

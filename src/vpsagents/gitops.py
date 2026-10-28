@@ -14,7 +14,8 @@ MAX_DIFF_BYTES = 2_000_000
 MAX_FILES = 200
 
 # no hooks, no pager, no prompts, no global config surprises
-_BASE = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"]
+_BASE = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never",
+         "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]  # signing needs a key/agent the control plane must not use
 _ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "vps-agents", "GIT_AUTHOR_EMAIL": "agents@localhost",
         "GIT_COMMITTER_NAME": "vps-agents", "GIT_COMMITTER_EMAIL": "agents@localhost"}
@@ -116,8 +117,12 @@ def base_moved(repo: Path, wt: Worktree, default_branch: str) -> bool:
 
 def rebase(wt: Worktree, onto_sha: str) -> bool:
     """Rebase the job branch onto the new base. False (and aborted) on conflict."""
-    p = subprocess.run([*_BASE, "rebase", onto_sha], cwd=wt.path, capture_output=True, text=True)
-    if p.returncode != 0:
+    try:
+        git(wt.path, "rebase", onto_sha)
+        ok = True
+    except GitError:
+        ok = False
+    if not ok:
         git(wt.path, "rebase", "--abort", check=False)
         return False
     wt.base_sha = onto_sha

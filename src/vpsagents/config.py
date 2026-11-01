@@ -128,6 +128,10 @@ class Settings(BaseModel):
     escalate_after_failures: int | None = Field(default=2, ge=1, le=10)
     # Strong-model runs (architect/reviewer/analyst) are scarce on free tiers; cap them separately. UTC day.
     max_strong_runs_per_day: int | None = Field(default=None, ge=1)
+    # Monitor: open an incident when a container's CPU / memory stays above these percentages. None disables.
+    memory_enabled: bool = True  # retrieve project memory into prompts and record job outcomes as notes
+    cpu_alert_percent: float | None = Field(default=95.0, gt=0, le=100)
+    memory_alert_percent: float | None = Field(default=90.0, gt=0, le=100)
     approval_ttl_minutes: int = Field(default=720, ge=1)
     max_concurrent_jobs: int = Field(default=2, ge=1, le=8)
     deploy_timeout_seconds: int = 900

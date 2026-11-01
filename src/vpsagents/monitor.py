@@ -20,9 +20,10 @@ CONFIRM_MISSES = 2
 
 class Monitor:
     def __init__(self, engine: Engine, interval: int = 120, cooldown_minutes: int = 60, *,
-                 probe=executors.http_ok, state=executors.container_state, logs=None):
+                 probe=executors.http_ok, state=executors.container_state, logs=None,
+                 stats=executors.container_stats):
         self.engine, self.interval, self.cooldown = engine, interval, cooldown_minutes * 60
-        self.probe, self.state = probe, state
+        self.probe, self.state, self.stats = probe, state, stats
         self.logs = logs or self._docker_logs
         self._misses: dict[str, int] = {}
         self._stop = threading.Event()
@@ -31,6 +32,18 @@ class Monitor:
     def _docker_logs(container: str) -> str:
         r = executors.run_argv(["docker", "logs", "--tail", "80", container], None, 20)
         return redact(r["output"], 4000)
+
+    def _resource_problems(self, c: str) -> list[str]:
+        st = self.engine.settings
+        if st.cpu_alert_percent is None and st.memory_alert_percent is None:
+            return []
+        sample = self.stats(c)
+        out = []
+        if sample and st.cpu_alert_percent is not None and sample["cpu"] >= st.cpu_alert_percent:
+            out.append(f"container {c}: high CPU {sample['cpu']:.0f}% (threshold {st.cpu_alert_percent:.0f}%)")
+        if sample and st.memory_alert_percent is not None and sample["mem"] >= st.memory_alert_percent:
+            out.append(f"container {c}: high memory {sample['mem']:.0f}% ({sample['usage']}, threshold {st.memory_alert_percent:.0f}%)")
+        return out
 
     def problems(self, proj) -> list[str]:
         out = []
@@ -42,6 +55,8 @@ class Monitor:
                 out.append(f"container {c}: status={st['status']}")
             elif st.get("health") == "unhealthy":
                 out.append(f"container {c}: unhealthy")
+            else:
+                out.extend(self._resource_problems(c))
         if proj.health_url and not self.probe(proj.health_url):
             out.append(f"health check failed: {proj.health_url}")
         return out

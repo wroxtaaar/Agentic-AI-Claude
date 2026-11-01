@@ -121,6 +121,25 @@ curl -H "$H" -d '{"project":"torrent-studio","kind":"restart","task":"torrent-st
 Job kinds: `change`, `investigate`, `incident`, `security_review`, `restart`. The monitor opens `incident` jobs itself
 (two consecutive failures, de-duplicated, cooldown) and notifies you; it never restarts anything.
 
+## Dashboard
+
+Open `http://127.0.0.1:8787/` (use an SSH tunnel from your PC), paste `VPSA_API_TOKEN`, and you can approve or reject pending actions, submit jobs, read diffs/plans/reviews, cancel jobs, and manage project memory. The page contains no data or secrets; every data call needs the token, and the token is kept only in that browser tab (sessionStorage).
+
+## Project memory
+
+Each project has a small memory that is retrieved into plan/work prompts (SQLite FTS5 ranking).
+- **fact**: you add it (dashboard or `POST /memory`) or promote a note. Shown first.
+- **note**: written automatically when a change job finishes or fails, built only from control-plane data (task text, file names, verified yes/no, review verdict, commit). Model output is never stored, so a poisoned reply can't plant instructions for later jobs.
+Prompts label memory as data, not instructions. Turn it off with `memory_enabled: false`.
+
+## Discover your projects
+
+`python -m vpsagents discover ~ --depth 3` lists git repos (skipping `node_modules`, dotted secret dirs, symlinks) and drafts config entries at tier 1 with a guessed verify command. It reads file names only, never contents. Review every line before using it.
+
+## Alerts
+
+Besides container/health incidents, the monitor opens a triage job when a container's CPU or memory stays above `cpu_alert_percent` / `memory_alert_percent`. Notifications go to Telegram, a webhook, and/or email. Email uses the same variables as the old project, so you can reuse them: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_SSL`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`.
+
 ## Model tiers
 
 `llm.models` maps `architect` / `reviewer` / `analyst` / `worker` (or any role name) to a gateway model. The architect writes a plan, the worker edits, the architect diagnoses repeated verification failures, the reviewer checks the diff. See `docs/FREE-TOKENS.md`.

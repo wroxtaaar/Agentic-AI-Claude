@@ -34,6 +34,9 @@ max_repairs: 2                          # verify-fail -> feed output back to the
 architect_plan: true                     # strong model writes a plan before the weak worker edits
 escalate_after_failures: 2              # after 2 failed verifications the architect diagnoses for the worker
 max_strong_runs_per_day: null           # cap strong-model sessions separately (free tiers are scarce)
+memory_enabled: true                    # retrieve project memory into prompts; finished jobs add notes automatically
+cpu_alert_percent: 95                   # monitor opens an incident above this (null disables)
+memory_alert_percent: 90
 review_pass: true                       # second model pass must end with "VERDICT: APPROVE" for tier-3 auto-apply
 approval_ttl_minutes: 720
 

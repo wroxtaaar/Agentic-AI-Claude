@@ -64,6 +64,20 @@ def container_state(name: str) -> dict:
     return {"known": True, "status": status, "health": health or None}
 
 
+def container_stats(name: str) -> dict:
+    """One-shot CPU/memory sample. {} when unavailable (never raises)."""
+    r = run_argv(["docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}", name], None, 25)
+    if not r["ok"]:
+        return {}
+    parts = r["output"].strip().split("|")
+    if len(parts) != 3:
+        return {}
+    try:
+        return {"cpu": float(parts[0].strip().rstrip("%")), "mem": float(parts[2].strip().rstrip("%")), "usage": parts[1].strip()}
+    except ValueError:
+        return {}
+
+
 def restart_container(project: Project, container: str, settings: Settings, *, state=container_state, sleep=time.sleep) -> dict:
     if container not in project.containers:
         return {"ok": False, "output": f"'{container}' is not one of {project.name}'s containers"}

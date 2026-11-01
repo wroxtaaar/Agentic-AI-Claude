@@ -64,10 +64,20 @@ def main(argv=None) -> int:
     for name in ("serve", "check"):
         s = sub.add_parser(name)
         s.add_argument("--config", required=True)
+    d = sub.add_parser("discover", help="find git projects under a directory and draft config entries (read-only)")
+    d.add_argument("root", nargs="?", default=os.path.expanduser("~"))
+    d.add_argument("--depth", type=int, default=3)
     sub.choices["serve"].add_argument("--host", default="127.0.0.1")
     sub.choices["serve"].add_argument("--port", type=int, default=8787)
     sub.choices["serve"].add_argument("--no-monitor", action="store_true")
     a = ap.parse_args(argv)
+    if a.cmd == "discover":
+        from pathlib import Path
+
+        from .discovery import draft_yaml, find_repos
+        repos = find_repos(Path(a.root), a.depth)
+        print(draft_yaml(repos) if repos else f"# no git repositories found under {a.root} (depth {a.depth})")
+        return 0
     settings = load_settings(a.config)
     if a.cmd == "check":
         return _check(settings)

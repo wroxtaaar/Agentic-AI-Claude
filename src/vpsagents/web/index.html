@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080a0d">
+<title>vps-agents</title>
+<style>
+:root{--bg:#080a0d;--panel:#111419;--panel2:#171a20;--line:#272c34;--text:#f3f5f7;--muted:#8e98a6;--accent:#7c9cff;--good:#55d68a;--warn:#f4c95d;--bad:#ff6b78}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.app{max-width:1100px;margin:auto;padding:16px 14px 80px}header{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}
+h1{font-size:18px;margin:0}h2{font-size:14px;margin:0}small,.sub{color:var(--muted);font-size:12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-bottom:14px;overflow:hidden}
+.head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+.body{padding:12px 14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+button,input,select,textarea{font:inherit;color:var(--text);background:#0b0d10;border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+button{cursor:pointer;background:var(--panel2)}button.ok{background:#1d4a31;border-color:#2c6e49}button.no{background:#4a1f26;border-color:#7a303b}
+input,select,textarea{width:100%}textarea{min-height:80px;resize:vertical}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row>*{flex:0 0 auto}.row .grow{flex:1 1 160px}
+.item{padding:10px 0;border-bottom:1px solid #20242b}.item:last-child{border:0}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.s-done{color:var(--good)}.s-failed,.s-rejected,.s-cancelled{color:var(--bad)}.s-awaiting_approval{color:var(--warn)}.s-running,.s-queued{color:var(--accent)}
+pre{white-space:pre-wrap;word-break:break-word;background:#0b0d10;border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:340px;overflow:auto;margin:6px 0}
+.empty{color:var(--muted);padding:8px 0}.err{color:var(--bad)}a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="app">
+<header><div><h1>vps-agents</h1><small>control plane · jobs, approvals, memory</small></div>
+<div class="row"><input id="token" type="password" placeholder="API token" style="width:200px"><button id="save">Connect</button></div></header>
+<div id="msg" class="err"></div>
+
+<section class="panel"><div class="head"><h2>Needs your approval</h2><button id="refresh">Refresh</button></div><div class="body" id="approvals"></div></section>
+
+<div class="grid">
+<section class="panel"><div class="head"><h2>New job</h2></div><div class="body">
+ <div class="row"><select id="project" class="grow"></select><select id="kind"><option>change</option><option>investigate</option><option>incident</option><option>security_review</option></select></div>
+ <p><textarea id="task" placeholder="What should the agents do? Be specific."></textarea></p>
+ <div class="row"><button id="submit" class="ok">Submit job</button><small id="budget"></small></div>
+</div></section>
+
+<section class="panel"><div class="head"><h2>Project memory</h2><select id="mproject" style="width:auto"></select></div><div class="body">
+ <div class="row"><input id="fact" class="grow" placeholder="Add a fact the agents should know (e.g. 'run tests with pytest -x')"><button id="addfact">Add</button></div>
+ <div id="memory"></div>
+</div></section>
+</div>
+
+<section class="panel"><div class="head"><h2>Jobs</h2><select id="filter" style="width:auto"><option value="">all</option><option>awaiting_approval</option><option>running</option><option>queued</option><option>done</option><option>failed</option></select></div><div class="body" id="jobs"></div></section>
+<section class="panel" id="detail" hidden><div class="head"><h2 id="dtitle"></h2><button id="close">Close</button></div><div class="body" id="dbody"></div></section>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props)){if(k==='class')e.className=v;else if(k.startsWith('on'))e[k]=v;else e.setAttribute(k,v)}for(const k of kids.flat())e.append(k instanceof Node?k:document.createTextNode(k??''));return e};
+const store={get(){try{return sessionStorage.getItem('vpsa_token')||''}catch{return ''}},set(v){try{sessionStorage.setItem('vpsa_token',v)}catch{}}};
+async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'Authorization':'Bearer '+store.get(),'Content-Type':'application/json'}});let b={};try{b=await r.json()}catch{}if(!r.ok)throw new Error(b.error||r.statusText);return b}
+const fail=e=>{$('msg').textContent=e.message||String(e)};const ok=()=>{$('msg').textContent=''};
+const empty=t=>el('div',{class:'empty'},t);
+const when=s=>s?new Date(s).toLocaleString():'';
+
+async function loadApprovals(){const box=$('approvals');box.replaceChildren();const a=await api('/approvals?status=pending');
+ if(!a.length){box.append(empty('Nothing waiting.'));return}
+ for(const x of a){const bind=x.bind&&x.bind.head_sha?'commit '+String(x.bind.head_sha).slice(0,10):'';
+  box.append(el('div',{class:'item'},el('div',{},el('b',{},x.action),' ',el('span',{class:'sub'},'job '+x.job_id+' · expires '+when(x.expires_at)+(bind?' · '+bind:''))),
+   el('pre',{},x.summary),el('div',{class:'row'},
+    el('button',{class:'ok',onclick:()=>decide(x.id,'approve')},'Approve'),el('button',{class:'no',onclick:()=>decide(x.id,'reject')},'Reject'),
+    el('button',{onclick:()=>openJob(x.job_id)},'View job'))))}}
+async function decide(id,what){try{await api('/approvals/'+id+'/'+what,{method:'POST'});ok();await refresh()}catch(e){fail(e)}}
+
+async function loadJobs(){const box=$('jobs');box.replaceChildren();const f=$('filter').value;const j=await api('/jobs?limit=40'+(f?'&status='+f:''));
+ if(!j.length){box.append(empty('No jobs yet.'));return}
+ for(const x of j)box.append(el('div',{class:'item'},el('div',{class:'row'},
+  el('span',{class:'tag s-'+x.status},x.status),el('b',{},x.project),el('span',{class:'sub'},x.kind+' · '+x.stage+' · '+when(x.updated_at)),
+  el('button',{onclick:()=>openJob(x.id)},'Open')),el('div',{class:'sub'},(x.task||'').slice(0,160)),x.error?el('div',{class:'err'},x.error.slice(0,200)):''))}
+
+async function openJob(id){try{const j=await api('/jobs/'+id);$('detail').hidden=false;$('dtitle').textContent=j.project+' · '+j.kind+' · '+j.status;
+ const b=$('dbody');b.replaceChildren();const d=j.data||{};
+ b.append(el('div',{class:'sub'},'job '+j.id+' · stage '+j.stage+' · agent runs '+(d.agent_runs??0)),el('pre',{},j.task));
+ if(j.error)b.append(el('div',{class:'err'},j.error));
+ for(const[k,l]of[['plan','Plan'],['report','Report'],['diffstat','Changes'],['diff','Diff'],['review','Review'],['verify_log','Verification'],['result','Result']])if(d[k])b.append(el('h2',{},l),el('pre',{},typeof d[k]==='string'?d[k]:JSON.stringify(d[k],null,2)));
+ b.append(el('h2',{},'Events'),el('pre',{},(j.events||[]).map(e=>e.ts+'  '+e.kind+'  '+e.message).join('\n')));
+ if(!['done','failed','rejected','cancelled'].includes(j.status))b.append(el('button',{class:'no',onclick:async()=>{try{await api('/jobs/'+id+'/cancel',{method:'POST'});await refresh();await openJob(id)}catch(e){fail(e)}}},'Cancel job'));
+ $('detail').scrollIntoView({behavior:'smooth'})}catch(e){fail(e)}}
+
+async function loadProjects(){const p=await api('/projects');for(const sel of[$('project'),$('mproject')]){const cur=sel.value;sel.replaceChildren(...p.map(x=>el('option',{value:x.name},x.name+' (tier '+x.tier+')')));if(cur)sel.value=cur}}
+async function loadBudget(){const b=await api('/budget');$('budget').textContent='agent runs today: '+b.agent_runs_today+(b.max_agent_runs_per_day?' / '+b.max_agent_runs_per_day:'')+(b.max_strong_runs_per_day?' · strong '+b.strong_runs_today+' / '+b.max_strong_runs_per_day:'')}
+
+async function loadMemory(){const box=$('memory');box.replaceChildren();const p=$('mproject').value;if(!p)return;const m=await api('/memory?project='+encodeURIComponent(p)+'&limit=30');
+ if(!m.length){box.append(empty('Nothing remembered yet. Finished jobs add notes automatically.'));return}
+ for(const x of m)box.append(el('div',{class:'item'},el('div',{class:'row'},el('span',{class:'tag'},x.trust),el('span',{class:'sub'},when(x.created_at))),el('div',{},x.content),
+  el('div',{class:'row'},x.trust==='note'?el('button',{onclick:async()=>{try{await api('/memory/'+x.id+'/promote',{method:'POST'});await loadMemory()}catch(e){fail(e)}}},'Make a fact'):'',
+   el('button',{class:'no',onclick:async()=>{try{await api('/memory/'+x.id,{method:'DELETE'});await loadMemory()}catch(e){fail(e)}}},'Delete'))))}
+
+async function refresh(){try{await Promise.all([loadApprovals(),loadJobs(),loadBudget(),loadMemory()]);ok()}catch(e){fail(e)}}
+$('save').onclick=async()=>{store.set($('token').value.trim());$('token').value='';try{await loadProjects();await refresh()}catch(e){fail(e)}};
+$('refresh').onclick=refresh;$('filter').onchange=()=>loadJobs().catch(fail);$('mproject').onchange=()=>loadMemory().catch(fail);$('close').onclick=()=>{$('detail').hidden=true};
+$('submit').onclick=async()=>{const task=$('task').value.trim();if(!task)return fail(new Error('Describe the task first.'));try{const j=await api('/jobs',{method:'POST',body:JSON.stringify({project:$('project').value,kind:$('kind').value,task})});$('task').value='';ok();await refresh();await openJob(j.id)}catch(e){fail(e)}};
+$('addfact').onclick=async()=>{const c=$('fact').value.trim();if(!c)return;try{await api('/memory',{method:'POST',body:JSON.stringify({project:$('mproject').value,content:c})});$('fact').value='';await loadMemory()}catch(e){fail(e)}};
+if(store.get())loadProjects().then(refresh).catch(fail);else fail(new Error('Paste your API token and press Connect.'));
+setInterval(()=>{if(store.get()&&!document.hidden)refresh()},20000);
+</script>
+</body>
+</html>

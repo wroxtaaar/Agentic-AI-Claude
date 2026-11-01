@@ -6,7 +6,9 @@ import os
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from pathlib import Path
+
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from . import states as S
@@ -89,7 +91,53 @@ def create_app(engine: Engine, token: str | None = None) -> Starlette:
             return JSONResponse(engine.decide_approval(aid, approve, by="api"))
         return h
 
+    async def index(_):
+        # The page itself holds no data and no secrets; every data call it makes needs the bearer token.
+        html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html, headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY",
+                                           "Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'",
+                                           "Referrer-Policy": "no-referrer"})
+
+    def _known_project(name: str) -> str:
+        if not any(p.name == name for p in engine.settings.projects):
+            raise SubmitError(f"unknown project '{name}'")
+        return name
+
+    async def memory_list(request: Request):
+        q = request.query_params
+        project = _known_project(q["project"]) if q.get("project") else None
+        try:
+            limit = int(q.get("limit", 50))
+        except ValueError:
+            raise SubmitError("limit must be an integer") from None
+        return JSONResponse(engine.memory.list(project, limit))
+
+    async def memory_add(request: Request):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise SubmitError("body must be JSON") from None
+        if not isinstance(body, dict) or not str(body.get("content", "")).strip():
+            raise SubmitError("content is required")
+        mid = engine.memory.add(_known_project(str(body.get("project", ""))), str(body["content"]), source="api", trust="fact")
+        return JSONResponse({"id": mid}, status_code=201)
+
+    async def memory_delete(request: Request):
+        if not engine.memory.delete(int(request.path_params["mid"])):
+            raise KeyError(request.path_params["mid"])
+        return Response(status_code=204)
+
+    async def memory_promote(request: Request):
+        if not engine.memory.promote(int(request.path_params["mid"])):
+            raise KeyError(request.path_params["mid"])
+        return JSONResponse({"ok": True})
+
     routes = [
+        Route("/", index),
+        Route("/memory", guarded(memory_list), methods=["GET"]),
+        Route("/memory", guarded(memory_add), methods=["POST"]),
+        Route("/memory/{mid:int}", guarded(memory_delete), methods=["DELETE"]),
+        Route("/memory/{mid:int}/promote", guarded(memory_promote), methods=["POST"]),
         Route("/health", health),
         Route("/projects", guarded(projects)),
         Route("/budget", guarded(budget)),

@@ -16,4 +16,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-vpsagents = ["roles/*.yaml", "roles/personas/*"]
+vpsagents = ["roles/*.yaml", "roles/personas/*", "web/*.html"]

@@ -10,6 +10,7 @@ Approving re-queues it; the same stage re-runs, finds the approval, consumes it 
 from __future__ import annotations
 
 import hashlib
+import re
 import logging
 import time
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from . import states as S
 from .config import Project, Settings
 from .notify import Notifier
 from .redact import redact
+from .memory import Memory
 from .roles import (DIAGNOSE_FORMAT, PLAN_FORMAT, REVIEW_FORMAT, build_prompt, load_roles, parse_verdict,
                     role_class)
 from .sandbox import Sandbox, SandboxSpec
@@ -55,6 +57,7 @@ class Engine:
         self.notifier = notifier or Notifier()
         self.probe, self.sleep, self.container_state = probe, sleep, container_state
         self.roles, self.job_roles = load_roles(settings.roles_file)
+        self.memory = Memory(store)
 
     # ------------------------------------------------------------------ submit
     def submit(self, project: str, kind: str, task: str, *, deploy: bool = False, role: str | None = None) -> dict:
@@ -188,6 +191,37 @@ class Engine:
         self.store.update_data(jid, agent_runs=n + 1)
         return self.worker.run(task)
 
+    # ---- memory
+    def _memory_block(self, job: dict) -> str:
+        if not self.settings.memory_enabled:
+            return ""
+        try:
+            return self.memory.prompt_block(job["project"], job["task"])
+        except Exception:  # noqa: BLE001 - memory must never break a job
+            log.warning("memory lookup failed for %s", job["id"])
+            return ""
+
+    def _remember(self, job: dict, outcome: str | None) -> None:
+        """Record a note built only from control-plane facts (never model output). Change jobs only."""
+        if not self.settings.memory_enabled or not outcome or job["kind"] not in S.CHANGE_KINDS:
+            return
+        if outcome == "worker made no changes":
+            return
+        d = job.get("data") or {}
+        files = re.findall(r"(?m)^\s*(\S+)\s+\|", d.get("diffstat") or "")[:6]
+        facts = []
+        if d.get("verified") is not None:
+            facts.append("verified" if d["verified"] else "not verified")
+        if d.get("review_verdict"):
+            facts.append(f"review {d['review_verdict']}")
+        text = (f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')} job {job['id']} ({job['kind']}): "
+                f"{job['task'][:160]} -> {outcome[:200]}"
+                + (f"; files: {', '.join(files)}" if files else "") + (f"; {', '.join(facts)}" if facts else ""))
+        try:
+            self.memory.add(job["project"], text, source=f"job:{job['id']}", trust="note")
+        except Exception:  # noqa: BLE001
+            log.warning("memory write failed for %s", job["id"])
+
     # ---- helpers
     def _fail(self, jid: str, msg: str):
         msg = redact(msg, 1500)
@@ -195,6 +229,7 @@ class Engine:
         if job["status"] in S.TERMINAL:
             return
         self.store.transition(jid, S.FAILED, error=msg)
+        self._remember(self.store.get_job(jid), f"FAILED: {msg}")
         self.store.event(jid, "failed", msg)
         self.notifier.send(f"❌ job {jid} ({job['project']}/{job['kind']}) failed: {msg[:500]}")
         raise _Stop
@@ -204,6 +239,7 @@ class Engine:
         self.store.transition(jid, S.DONE)
         self.store.event(jid, "done", "completed")
         job = self.store.get_job(jid)
+        self._remember(job, result.get("result"))
         self.notifier.send(f"✅ job {jid} ({job['project']}/{job['kind']}) done")
         self._cleanup(job)
         raise _Stop
@@ -286,7 +322,8 @@ class Engine:
             self._sync_remote(job, proj)
         wt = self._worktree(job, proj, branch=True)
         arch = self.roles["architect"]
-        prompt = build_prompt(arch, task=job["task"], project_name=proj.name, extra=PLAN_FORMAT)
+        prompt = build_prompt(arch, task=job["task"], project_name=proj.name,
+                              extra="\n\n".join(x for x in (self._memory_block(job), PLAN_FORMAT) if x))
         try:
             res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="plan"), arch)
             plan = redact(res.output, 6000) if res.ok else ""
@@ -318,7 +355,7 @@ class Engine:
         role = self.roles[job["role"]]
         if role.kind == "readonly":
             wt = self._worktree(job, proj, branch=False)
-            prompt = build_prompt(role, task=job["task"], project_name=proj.name)
+            prompt = build_prompt(role, task=job["task"], project_name=proj.name, extra=self._memory_block(job))
             try:
                 res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=True, label="ro"), role)
             except BudgetExceeded as e:
@@ -334,6 +371,8 @@ class Engine:
         plan = d.get("plan", "")
         extra = ("## Plan from the architect (follow it; if it is wrong, make the smallest correct change and say why)\n"
                  + plan) if plan else ""
+        if not plan:  # the plan was written with memory in view; without one, give the worker the memory directly
+            extra = self._memory_block(job)
         prompt = build_prompt(role, task=job["task"], project_name=proj.name, extra=extra,
                               verify_hint=self._verify_hint(proj), feedback=d.get("feedback", ""))
         try:

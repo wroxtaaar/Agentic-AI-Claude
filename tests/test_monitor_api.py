@@ -98,7 +98,7 @@ class MonitorTests(Env):
         self.state = {"known": True, "status": "running", "health": "healthy"}
         self.url_ok = True
         self.mon = Monitor(self.engine, probe=lambda u: self.url_ok, state=lambda c: self.state,
-                           logs=lambda c: "ERROR boom password=hunter2hunter2")
+                           logs=lambda c: "ERROR boom password=hunter2hunter2", stats=lambda c: {})
 
     def test_needs_two_consecutive_misses_then_opens_one_incident(self):
         self.state = {"known": True, "status": "exited", "health": None}

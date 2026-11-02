@@ -1,0 +1,28 @@
+# systemd unit for the vps-agents control plane. Paths match the default layout (user "ubuntu",
+# repo in ~/Agentic-AI-Claude, secrets in ~/.config/vpsagents/env). Edit them if yours differ.
+#
+# Install:
+#   sudo cp deploy/vps-agents.service /etc/systemd/system/vps-agents.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vps-agents
+# Logs:      journalctl -u vps-agents -f
+# Remove:    sudo systemctl disable --now vps-agents && sudo rm /etc/systemd/system/vps-agents.service
+[Unit]
+Description=vps-agents control plane (dashboard on 127.0.0.1:8787)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Agentic-AI-Claude
+# KEY=value lines: VPSA_API_TOKEN, VPSA_GITHUB_TOKEN, FREELLMAPI_API_KEY (and optional SMTP_*/VPSA_TELEGRAM_*)
+EnvironmentFile=/home/ubuntu/.config/vpsagents/env
+ExecStart=/home/ubuntu/Agentic-AI-Claude/.venv/bin/vpsagents serve --config /home/ubuntu/Agentic-AI-Claude/config/config.yaml --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+# Listens on loopback only; never run as root. It needs the docker group (sandbox) and git, so no stronger sandboxing here.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -52,7 +52,14 @@ class Monitor:
             if not st.get("known"):
                 out.append(f"container {c}: not inspectable ({st.get('error', '')[:100]})")
             elif st["status"] != "running":
-                out.append(f"container {c}: status={st['status']}")
+                extra = []
+                if st.get("restarts") is not None:
+                    extra.append(f"restarts={st['restarts']}")
+                if st.get("exit_code") is not None:
+                    extra.append(f"last exit code={st['exit_code']}")
+                if st.get("oom_killed"):
+                    extra.append("OOM-killed (out of memory)")
+                out.append(f"container {c}: status={st['status']}" + (f" ({', '.join(extra)})" if extra else ""))
             elif st.get("health") == "unhealthy":
                 out.append(f"container {c}: unhealthy")
             else:

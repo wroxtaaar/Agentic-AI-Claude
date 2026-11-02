@@ -57,11 +57,18 @@ def deploy(project: Project, settings: Settings, *, probe=http_ok, sleep=time.sl
 
 
 def container_state(name: str) -> dict:
-    r = run_argv(["docker", "inspect", "-f", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}", name], None, 20)
+    fmt = ("{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|"
+           "{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.RestartCount}}")
+    r = run_argv(["docker", "inspect", "-f", fmt, name], None, 20)
     if not r["ok"]:
         return {"known": False, "error": r["output"]}
-    status, _, health = r["output"].strip().partition("|")
-    return {"known": True, "status": status, "health": health or None}
+    parts = r["output"].strip().split("|")
+    parts += [""] * (5 - len(parts))
+    status, health, exit_code, oom, restarts = parts[:5]
+    return {"known": True, "status": status, "health": health or None,
+            "exit_code": int(exit_code) if exit_code.lstrip("-").isdigit() else None,
+            "oom_killed": oom.strip().lower() == "true",
+            "restarts": int(restarts) if restarts.isdigit() else None}
 
 
 def container_stats(name: str) -> dict:

@@ -188,6 +188,21 @@ class ResourceAlertTests(Env):
         self.assertEqual(self.mon.tick(), [])
 
 
+class ContainerStateParsing(unittest.TestCase):
+    def test_parses_status_health_exit_oom_restarts(self):
+        from vpsagents import executors
+        with mock.patch.object(executors, "run_argv", return_value={"ok": True, "output": "restarting||137|true|2666\n"}):
+            st = executors.container_state("c")
+        self.assertEqual(st, {"known": True, "status": "restarting", "health": None, "exit_code": 137,
+                              "oom_killed": True, "restarts": 2666})
+        with mock.patch.object(executors, "run_argv", return_value={"ok": True, "output": "running|healthy|0|false|0"}):
+            self.assertEqual(executors.container_state("c")["health"], "healthy")
+        with mock.patch.object(executors, "run_argv", return_value={"ok": True, "output": "running"}):  # short/odd output
+            self.assertEqual(executors.container_state("c")["exit_code"], None)
+        with mock.patch.object(executors, "run_argv", return_value={"ok": False, "output": "no such object"}):
+            self.assertFalse(executors.container_state("c")["known"])
+
+
 class FakeSMTP:
     sent = []
     raise_on_send = False

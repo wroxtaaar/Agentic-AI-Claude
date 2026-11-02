@@ -113,6 +113,15 @@ class MonitorTests(Env):
         self.assertIn("ERROR boom", job["task"])
         self.assertTrue(any("incident" in m for m in self.notes.msgs))
 
+    def test_incident_includes_exit_code_oom_and_restart_count(self):
+        self.state = {"known": True, "status": "restarting", "health": None, "exit_code": 137, "oom_killed": True, "restarts": 2666}
+        self.mon.tick()
+        task = self.job(self.mon.tick()[0])["task"]
+        self.assertIn("status=restarting", task)
+        self.assertIn("restarts=2666", task)
+        self.assertIn("last exit code=137", task)
+        self.assertIn("OOM-killed", task)
+
     def test_blip_does_not_alert(self):
         self.url_ok = False
         self.mon.tick()

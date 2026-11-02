@@ -103,11 +103,18 @@ class LLMSettings(BaseModel):
 class WorkerSettings(BaseModel):
     # argv template run INSIDE the sandbox. Placeholders: {prompt} {prompt_file} {workdir}
     command: Argv | None = None
+    # Optional different argv for read-only sessions (plan, review, investigate, incident reports). Falls back to `command`.
+    readonly_command: Argv | None = None
 
     @field_validator("command")
     @classmethod
     def _cmd(cls, v):
         return _check_argv(v, "worker.command")
+
+    @field_validator("readonly_command")
+    @classmethod
+    def _rocmd(cls, v):
+        return _check_argv(v, "worker.readonly_command")
 
 
 class Settings(BaseModel):

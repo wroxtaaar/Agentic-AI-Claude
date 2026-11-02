@@ -34,6 +34,7 @@ class RunResult:
     returncode: int
     output: str
     timed_out: bool = False
+    note: str = ""  # control-plane remarks (e.g. which files were imported / ignored)
 
     @property
     def ok(self) -> bool:

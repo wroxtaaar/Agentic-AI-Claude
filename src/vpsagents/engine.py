@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import executors, gitops, policy
+from . import executors, gitops, policy, workcopy
 from . import states as S
 from .config import Project, Settings
 from .notify import Notifier
@@ -379,8 +379,11 @@ class Engine:
             res = self._run_worker(job, WorkerTask(jid, prompt, wt.path, readonly=False, label=f"w{d.get('repairs', 0)}"), role)
         except BudgetExceeded as e:
             self._fail(jid, str(e))
+        except gitops.UnsafeDiff as e:  # includes workcopy.UnsafeCopy: nothing was written to the worktree
+            self._fail(jid, f"diff rejected: {e}")
         self.store.update_data(jid, worker_output=redact(res.output, 6000))
-        self.store.event(jid, "worker", f"rc={res.returncode}{' (timeout)' if res.timed_out else ''}")
+        self.store.event(jid, "worker", f"rc={res.returncode}{' (timeout)' if res.timed_out else ''}"
+                                        + (f"; {res.note}" if res.note else ""))
         if not res.ok:
             self._fail(jid, f"worker failed (rc={res.returncode}{', timeout' if res.timed_out else ''})")
         try:
@@ -403,17 +406,17 @@ class Engine:
             self._advance(jid, "review")
             return
         log_parts, ok = [], True
-        for i, cmd in enumerate(proj.verify_commands):
-            spec = SandboxSpec(name=f"vpsa-{jid}-v{i}-{d.get('repairs', 0)}", command=cmd, workdir=wt.path,
-                               network=proj.verify_network, timeout=self.settings.sandbox.timeout_seconds)
-            r = self.sandbox.run(spec)
-            log_parts.append(f"$ {' '.join(cmd)}\n[rc={r.returncode}{' timeout' if r.timed_out else ''}]\n{r.output[-3000:]}")
-            if not r.ok:
-                ok = False
-                break
-        # verification may leave build artifacts; the worktree is disposable, restore it
-        gitops.git(wt.path, "reset", "--hard", "-q", "HEAD", check=False)
-        gitops.git(wt.path, "clean", "-fdxq", check=False)
+        # Verification runs on a throwaway copy, never in the worktree: untrusted test code can't touch the real
+        # worktree or its .git pointer, and there is nothing to clean up afterwards.
+        with workcopy.scratch(wt.path, self.settings.data_dir / "scratch") as scr:
+            for i, cmd in enumerate(proj.verify_commands):
+                spec = SandboxSpec(name=f"vpsa-{jid}-v{i}-{d.get('repairs', 0)}", command=cmd, workdir=scr.path,
+                                   network=proj.verify_network, timeout=self.settings.sandbox.timeout_seconds)
+                r = self.sandbox.run(spec)
+                log_parts.append(f"$ {' '.join(cmd)}\n[rc={r.returncode}{' timeout' if r.timed_out else ''}]\n{r.output[-3000:]}")
+                if not r.ok:
+                    ok = False
+                    break
         text = redact("\n\n".join(log_parts), 6000)
         self.store.update_data(jid, verified=ok, verify_log=text)
         self.store.event(jid, "verify", "passed" if ok else "failed")

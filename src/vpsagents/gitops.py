@@ -26,10 +26,11 @@ class GitError(Exception):
 
 
 def git(cwd: Path, *args: str, check: bool = True, timeout: int = 120, extra_env: dict | None = None,
-        secret: str | None = None) -> str:
+        secret: str | None = None, input_text: str | None = None) -> str:
     import os
     env = {**os.environ, **_ENV, **(extra_env or {})}
-    p = subprocess.run([*_BASE, *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+    p = subprocess.run([*_BASE, *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
+                       input=input_text)
     if check and p.returncode != 0:
         msg = (p.stderr or p.stdout).strip()
         if secret:

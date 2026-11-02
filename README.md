@@ -81,9 +81,17 @@ Optional: `VPSA_TELEGRAM_TOKEN` + `VPSA_TELEGRAM_CHAT_ID` (or `VPSA_WEBHOOK_URL`
 ```bash
 python -m vpsagents.probe --base-url http://127.0.0.1:3001/v1 --key-env FREELLMAPI_API_KEY
 ```
-Shows which gateway models return valid tool calls. Pick one coding agent that can run non-interactively against an
-OpenAI-compatible endpoint, install it in `docker/Dockerfile.agent`, and set `worker.command`. The env it receives:
-`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` plus `OPENAI_*` aliases.
+Shows which gateway models return valid tool calls. The shipped default is **aider** (see `config/config.terabox-bot.yaml`
+and `docker/Dockerfile.agent`): it edits files from plain-text diffs, so it works with weaker free models, and `ask` mode
+covers plans, reviews and reports (`worker.readonly_command`). Any agent that runs non-interactively against an
+OpenAI-compatible endpoint can replace it. The env it receives: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` plus `OPENAI_*` aliases.
+
+**Containers never see your real worktree.** Every worker session and every verify run gets a throwaway copy of the
+tracked files with its own tiny git repo (so tools get a repo map). Afterwards the control plane compares the copy to a
+sha256 baseline in plain Python (it never runs git inside the untrusted copy) and imports only regular-file changes into
+the real worktree. It rejects symlinks, special files, nested `.git`, secret-looking paths, oversized or too many changes,
+and any write through a symlinked directory. Files your `.gitignore` covers are dropped and reported. Read-only sessions
+(plan, review, reports) discard the copy, so they cannot change anything even if they try.
 
 ## Publishing to your remote (`publish: push_main`)
 

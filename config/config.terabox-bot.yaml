@@ -12,18 +12,37 @@ sandbox:
 llm:
   base_url: http://freellmapi:3001/v1
   api_key_env: FREELLMAPI_API_KEY
-  model: auto                               # replace with a model that passed `python -m vpsagents.probe`
+  model: auto
   # Strong models think, weak models type. Classes: architect (plans + diagnoses), reviewer, analyst
   # (investigator/sre/security/git reports), worker (roles that edit files). A role name beats its class.
   # Pick names from `python -m vpsagents.probe` output; leave a class out to fall back to `model` above.
+  # FreeLLMAPI routing aliases that passed the probe on your server. Pin exact model names later if you want
+  # predictable behaviour; aliases may route to different models over time.
   models:
-    architect: auto
-    reviewer: auto
-    analyst: auto
-    worker: auto
+    architect: auto:architecture
+    reviewer: auto:architecture
+    analyst: auto:architecture
+    worker: auto:coding
 
 worker:
-  command: null                             # <-- set after you pick a coding agent (see README "Choosing the worker")
+  # Runs INSIDE the sandbox on a throwaway copy of the tracked files (own tiny git repo, so aider's repo map works).
+  # aider edits files from plain-text diffs, so weaker free models work. Verify each flag with `aider --help`
+  # in your image (written against aider 0.86.2). The model comes from LLM_MODEL (set per role by llm.models).
+  command:
+    - sh
+    - -c
+    - >-
+      exec aider --model "openai/$LLM_MODEL" --message-file /task/prompt.md --yes-always --no-auto-commits
+      --no-pretty --no-stream --no-analytics --no-check-update --no-show-model-warnings --no-suggest-shell-commands
+      --no-detect-urls --no-gitignore
+  # Plan / review / reports: aider's ask mode answers without editing files.
+  readonly_command:
+    - sh
+    - -c
+    - >-
+      exec aider --model "openai/$LLM_MODEL" --chat-mode ask --message-file /task/prompt.md --yes-always
+      --no-auto-commits --no-pretty --no-stream --no-analytics --no-check-update --no-show-model-warnings
+      --no-suggest-shell-commands --no-detect-urls --no-gitignore
 
 max_agent_runs_per_job: 8
 max_agent_runs_per_day: 100                 # set a bit under your real daily free quota

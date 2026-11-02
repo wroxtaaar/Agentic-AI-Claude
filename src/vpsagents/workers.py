@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import workcopy
 from .config import Settings
 from .sandbox import RunResult, Sandbox, SandboxSpec
 
@@ -39,7 +40,9 @@ class CommandWorker(Worker):
             (Path(td) / "prompt.md").write_text(task.prompt, encoding="utf-8")
             subs = {"{prompt}": task.prompt, "{prompt_file}": "/task/prompt.md", "{workdir}": "/work"}
             cmd = []
-            for part in self.settings.worker.command:
+            template = (self.settings.worker.readonly_command if task.readonly and self.settings.worker.readonly_command
+                        else self.settings.worker.command)
+            for part in template:
                 for k, v in subs.items():
                     part = part.replace(k, v)
                 cmd.append(part)
@@ -49,10 +52,20 @@ class CommandWorker(Worker):
                    "OPENAI_BASE_URL": llm.base_url, "OPENAI_API_BASE": llm.base_url, "OPENAI_MODEL": model}
             if key:
                 env.update({"LLM_API_KEY": key, "OPENAI_API_KEY": key})
-            spec = SandboxSpec(name=f"vpsa-{task.job_id}-{task.label}", command=cmd, workdir=task.workdir,
-                               readonly=task.readonly, network="gateway", env=env,
-                               extra_ro_mounts=[(Path(td), "/task")], timeout=self.settings.sandbox.timeout_seconds)
-            return self.sandbox.run(spec)
+            # The container only ever sees a throwaway copy of the tracked files (see workcopy.py), never the real
+            # worktree or its .git pointer. Read-only tasks simply discard the copy; edits are imported back through
+            # strict checks (UnsafeCopy propagates to the engine, which fails the job).
+            with workcopy.scratch(task.workdir, self.settings.data_dir / "scratch") as scr:
+                spec = SandboxSpec(name=f"vpsa-{task.job_id}-{task.label}", command=cmd, workdir=scr.path,
+                                   readonly=False, network="gateway", env=env,
+                                   extra_ro_mounts=[(Path(td), "/task")], timeout=self.settings.sandbox.timeout_seconds)
+                res = self.sandbox.run(spec)
+                if task.readonly or not res.ok:
+                    return res
+                rep = workcopy.import_changes(scr, task.workdir)
+                res.note = (f"imported: {len(rep.modified)} modified, {len(rep.added)} added, {len(rep.deleted)} deleted"
+                            + (f"; ignored: {', '.join(rep.ignored[:8])}" if rep.ignored else ""))
+                return res
 
 
 class CallableWorker(Worker):

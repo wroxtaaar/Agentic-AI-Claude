@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# vpsa up|status|down  -- start / check / stop the vps-agents stack on this VPS. Prints no secrets.
+#   up      start Docker, the FreeLLMAPI gateway, the sandbox network and the vps-agents service, then check them
+#   status  only check
+#   down    stop vps-agents and FreeLLMAPI (your other containers are not touched)
+# Override with env vars: FREELLMAPI_DIR CONTAINER NETWORK SERVICE ENV_FILE IMAGE
+set -u
+FREELLMAPI_DIR="${FREELLMAPI_DIR:-$HOME/freellmapi}"
+CONTAINER="${CONTAINER:-freellmapi-freellmapi-1}"
+NETWORK="${NETWORK:-vpsa-gateway}"
+SERVICE="${SERVICE:-vps-agents}"
+ENV_FILE="${ENV_FILE:-$HOME/.config/vpsagents/env}"
+IMAGE="${IMAGE:-vpsa-agent:latest}"
+ok()   { printf '  [ ok ] %s\n' "$*"; }
+bad()  { printf '  [FAIL] %s\n' "$*"; FAILED=1; }
+FAILED=0
+
+start_all() {
+  systemctl is-active --quiet docker || sudo systemctl start docker || { bad "could not start docker"; return; }
+  ( cd "$FREELLMAPI_DIR" && docker compose up -d ) >/dev/null 2>&1 && ok "FreeLLMAPI container started" || bad "docker compose up failed in $FREELLMAPI_DIR"
+  docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create --internal "$NETWORK" >/dev/null 2>&1
+  docker inspect -f '{{json .NetworkSettings.Networks}}' "$CONTAINER" 2>/dev/null | grep -q "\"$NETWORK\"" \
+    || docker network connect --alias freellmapi "$NETWORK" "$CONTAINER" >/dev/null 2>&1
+  sudo systemctl start "$SERVICE" || bad "could not start $SERVICE"
+}
+
+check_all() {
+  systemctl is-active --quiet docker && ok "docker running" || bad "docker is not running"
+  docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null | grep -q '^running' \
+    && ok "FreeLLMAPI container running" || bad "FreeLLMAPI container $CONTAINER is not running (try: vpsa up)"
+  docker network inspect "$NETWORK" >/dev/null 2>&1 && ok "sandbox network $NETWORK exists" || bad "network $NETWORK missing"
+  docker inspect -f '{{json .NetworkSettings.Networks}}' "$CONTAINER" 2>/dev/null | grep -q "\"$NETWORK\"" \
+    && ok "gateway is attached to $NETWORK" || bad "FreeLLMAPI is not attached to $NETWORK"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 && ok "sandbox image $IMAGE present" || bad "sandbox image $IMAGE missing (docker build -f docker/Dockerfile.agent -t $IMAGE .)"
+  systemctl is-active --quiet "$SERVICE" && ok "$SERVICE service running" || bad "$SERVICE service is not running"
+  up=0
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -s -m 3 http://127.0.0.1:8787/health 2>/dev/null | grep -q '"ok"'; then up=1; break; fi
+    sleep 2
+  done
+  [ "$up" = 1 ] && ok "dashboard/API answers on 127.0.0.1:8787" || bad "nothing answers on 127.0.0.1:8787 (journalctl -u $SERVICE -n 30)"
+  if [ -r "$ENV_FILE" ]; then
+    key=$(grep -m1 '^FREELLMAPI_API_KEY=' "$ENV_FILE" | cut -d= -f2-)
+    if [ -n "$key" ]; then
+      out=$(curl -s -m 10 -H "Authorization: Bearer $key" http://127.0.0.1:3001/v1/models 2>/dev/null)
+      n=$(printf '%s' "$out" | python3 -c 'import sys,json
+try: print(len(json.load(sys.stdin)["data"]))
+except Exception: print(0)' 2>/dev/null)
+      [ "${n:-0}" -gt 0 ] && ok "gateway answers with your key: $n models" || bad "gateway did not return models (wrong key, or provider keys lost?)"
+    else bad "FREELLMAPI_API_KEY not found in $ENV_FILE"; fi
+  else bad "cannot read $ENV_FILE"; fi
+}
+
+case "${1:-status}" in
+  up)     echo "Starting..."; start_all; echo "Checking..."; check_all ;;
+  status) check_all ;;
+  down)   sudo systemctl stop "$SERVICE"; ( cd "$FREELLMAPI_DIR" && docker compose stop ) >/dev/null 2>&1; echo "stopped $SERVICE and FreeLLMAPI"; exit 0 ;;
+  *)      echo "usage: vpsa up|status|down"; exit 2 ;;
+esac
+if [ "$FAILED" = 0 ]; then
+  echo; echo "All good. From your PC:  ssh -L 8787:127.0.0.1:8787 ubuntu@<vps-ip>   then open http://localhost:8787/"
+else
+  echo; echo "Something needs attention (see FAIL lines above)."; exit 1
+fi

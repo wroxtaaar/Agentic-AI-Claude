@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 
@@ -16,14 +17,27 @@ from .redact import redact
 
 log = logging.getLogger("vpsagents.monitor")
 CONFIRM_MISSES = 2
+MAX_BACKOFF = 24 * 3600
+# numbers that change every sample must not make an unchanged problem look new
+_VOLATILE = [(re.compile(r"\d+(?:\.\d+)?%"), "N%"), (re.compile(r"restarts=\d+"), "restarts=N"),
+             (re.compile(r"\d+(?:\.\d+)?\s?[KMGT]?i?B\b"), "SIZE")]
+
+
+def signature(probs: list[str]) -> str:
+    norm = []
+    for p in probs:
+        for rx, rep in _VOLATILE:
+            p = rx.sub(rep, p)
+        norm.append(p)
+    return hashlib.sha256("\n".join(sorted(norm)).encode()).hexdigest()[:12]
 
 
 class Monitor:
     def __init__(self, engine: Engine, interval: int = 120, cooldown_minutes: int = 60, *,
                  probe=executors.http_ok, state=executors.container_state, logs=None,
-                 stats=executors.container_stats):
+                 stats=executors.container_stats, clock=time.time):
         self.engine, self.interval, self.cooldown = engine, interval, cooldown_minutes * 60
-        self.probe, self.state, self.stats = probe, state, stats
+        self.probe, self.state, self.stats, self.clock = probe, state, stats, clock
         self.logs = logs or self._docker_logs
         self._misses: dict[str, int] = {}
         self._stop = threading.Event()
@@ -86,10 +100,14 @@ class Monitor:
             self._misses[proj.name] = self._misses.get(proj.name, 0) + 1
             if self._misses[proj.name] < CONFIRM_MISSES:
                 continue
-            sig = hashlib.sha256("\n".join(sorted(probs)).encode()).hexdigest()[:12]
+            sig = signature(probs)
             last = json.loads(store.kv_get(key) or "null")
-            if last and last["sig"] == sig and time.time() - last["ts"] < self.cooldown:
-                continue
+            n = 0
+            if last and last["sig"] == sig:
+                # the same unresolved problem: back off (cooldown, 2x, 4x ... up to a day) instead of re-triaging hourly
+                n = last.get("n", 0) + 1
+                if self.clock() - last["ts"] < min(self.cooldown * 2 ** last.get("n", 0), MAX_BACKOFF):
+                    continue
             logs = []
             for c in proj.containers:
                 if any(p.startswith(f"container {c}") for p in probs):
@@ -99,7 +117,7 @@ class Monitor:
                     "\n\nDetermine the most likely cause using the logs above and the code. "
                     "Say what is observed vs guessed, and recommend next steps (do not run anything).")
             job = self.engine.submit(proj.name, "incident", task)
-            store.kv_set(key, json.dumps({"sig": sig, "ts": time.time(), "job": job["id"]}))
+            store.kv_set(key, json.dumps({"sig": sig, "ts": self.clock(), "job": job["id"], "n": n}))
             self.engine.notifier.send(f"🔴 incident on {proj.name}: {'; '.join(probs)[:400]}\ntriage job {job['id']}")
             opened.append(job["id"])
         return opened

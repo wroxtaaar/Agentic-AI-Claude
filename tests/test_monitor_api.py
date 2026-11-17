@@ -122,6 +122,44 @@ class MonitorTests(Env):
         self.assertIn("last exit code=137", task)
         self.assertIn("OOM-killed", task)
 
+    def test_crash_loop_with_changing_restart_count_opens_one_incident(self):
+        n = 100
+        for _ in range(12):
+            n += 7  # a crash-looping container's restart count changes on every sample
+            self.state = {"known": True, "status": "restarting", "health": None, "exit_code": 1, "restarts": n}
+            self.mon.tick()
+        incidents = [j for j in self.store.list_jobs(None, None, 50) if j["kind"] == "incident"]
+        self.assertEqual(len(incidents), 1)
+
+    def test_changing_cpu_and_memory_numbers_do_not_look_like_a_new_problem(self):
+        from vpsagents.monitor import signature
+        a = signature(["container web: high memory 91% (467MiB / 512MiB, threshold 90%)", "container web: high CPU 97% (threshold 95%)"])
+        b = signature(["container web: high memory 96% (492MiB / 512MiB, threshold 90%)", "container web: high CPU 99% (threshold 95%)"])
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, signature(["container web: status=exited"]))
+        self.assertNotEqual(signature(["container web: status=exited (exit code 1)"]), signature(["container web: status=exited (exit code 137)"]))
+
+    def test_unresolved_problem_backs_off_up_to_a_day_and_recovery_resets_it(self):
+        now = [1000.0]
+        mon = Monitor(self.engine, probe=lambda u: True, state=lambda c: self.state, logs=lambda c: "log",
+                      stats=lambda c: {}, clock=lambda: now[0])
+        self.state = {"known": True, "status": "exited", "health": None, "exit_code": 1}
+        mon.tick()
+        self.assertEqual(len(mon.tick()), 1)                    # first incident
+        opened = []
+        for hours in range(1, 60):                              # then check every hour for 2.5 days
+            now[0] += 3600
+            opened += mon.tick()
+        # cooldown 60min doubles each time, capped at 24h: re-opened at +1h, +3h, +7h, +15h, +31h, +55h
+        self.assertEqual(len(opened), 6)
+        # recovery resets the backoff
+        self.state = {"known": True, "status": "running", "health": "healthy"}
+        mon.tick()
+        self.state = {"known": True, "status": "exited", "health": None, "exit_code": 1}
+        mon.tick()
+        now[0] += 10
+        self.assertEqual(len(mon.tick()), 1)                    # a fresh incident right away
+
     def test_blip_does_not_alert(self):
         self.url_ok = False
         self.mon.tick()
